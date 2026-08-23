@@ -107,7 +107,6 @@ struct DataAttributes {
     pub(crate) version: Option<LitInt>,
     pub(crate) with: Option<Path>,
     pub(crate) from: Option<Path>,
-    pub(crate) try_from: Option<(Path, Path)>,
 }
 
 impl DataAttributes {
@@ -124,13 +123,6 @@ impl DataAttributes {
             self.with = Some(meta.value()?.parse()?);
         } else if meta.path.is_ident("from") {
             self.from = Some(meta.value()?.parse()?);
-        } else if meta.path.is_ident("try_from") {
-            // let tuple_try_from: TupleTryFrom = meta.value()?.parse()?;
-            // let mut fields = tuple_try_from.fields.into_iter();
-            // self.try_from.replace((
-            //     fields.next().unwrap().clone(),
-            //     fields.next().unwrap().clone(),
-            // ));
         } else {
             panic!(
                 "Unknown attribute: {}",
@@ -255,11 +247,6 @@ pub fn data(args: TokenStream, input: TokenStream) -> TokenStream {
         // Pass through
         model_args.extend(quote! { , from = #from });
     }
-
-    // if let Some(try_from) = attrs.try_from.as_ref() {
-    //     // Pass through
-    //     model_args.extend(quote! { , try_from = #try_from });
-    // }
 
     let struct_ident = &item_struct.ident;
     let register = if has_instance {
