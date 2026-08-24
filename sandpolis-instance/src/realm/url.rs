@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::str::FromStr;
+use std::time::Duration;
 use url::Url;
 
 /// Locates a server instance over the network. These have a format like:
@@ -77,9 +78,6 @@ impl FromStr for ServerUrl {
             format!("https://{s}")
         })?;
 
-        // TODO
-        url.query_pairs();
-
         let host = url
             .host_str()
             .ok_or_else(|| anyhow!("Invalid host in URL"))?;
@@ -97,9 +95,49 @@ impl FromStr for ServerUrl {
             } else {
                 RealmName::default()
             },
-            // TODO
-            retry: RetryWait::default(),
+            retry: parse_retry(&url)?,
         })
+    }
+}
+
+/// Reconstruct the [`RetryWait`] connection policy from a URL's query string,
+/// inverting the encoding produced by [`ServerUrl`]'s [`Display`]. A URL with
+/// no `type` parameter falls back to [`RetryWait::default`].
+fn parse_retry(url: &Url) -> Result<RetryWait> {
+    let pairs: std::collections::HashMap<String, String> = url
+        .query_pairs()
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect();
+
+    let Some(kind) = pairs.get("type") else {
+        return Ok(RetryWait::default());
+    };
+
+    let millis = |key: &str| -> Result<Duration> {
+        let raw = pairs
+            .get(key)
+            .ok_or_else(|| anyhow!("Missing '{key}' retry parameter"))?;
+        Ok(Duration::from_millis(raw.parse()?))
+    };
+
+    match kind.as_str() {
+        "exponential" => Ok(RetryWait::Exponential {
+            initial: millis("initial")?,
+            constant: pairs
+                .get("constant")
+                .ok_or_else(|| anyhow!("Missing 'constant' retry parameter"))?
+                .parse()?,
+            limit: pairs
+                .get("limit")
+                .map(|l| l.parse().map(Duration::from_millis))
+                .transpose()?,
+            iteration: 0,
+        }),
+        "constant" => Ok(RetryWait::Constant {
+            initial: millis("initial")?,
+            iteration: 0,
+        }),
+        other => Err(anyhow!("Unknown retry type: {other}")),
     }
 }
 
@@ -316,5 +354,66 @@ mod tests {
         assert_eq!(parsed.host, url.host);
         assert_eq!(parsed.port, url.port);
         assert_eq!(parsed.realm, url.realm);
+    }
+
+    #[test]
+    fn test_retry_defaults_without_query() {
+        let url: ServerUrl = "example.com".parse().unwrap();
+        assert_eq!(url.retry, RetryWait::default());
+    }
+
+    #[test]
+    fn test_retry_constant_round_trips() {
+        let original = ServerUrl {
+            host: "example.com".to_string(),
+            port: 8768,
+            realm: RealmName::default(),
+            retry: RetryWait::Constant {
+                initial: Duration::from_millis(1500),
+                iteration: 0,
+            },
+        };
+        let parsed: ServerUrl = original.to_string().parse().unwrap();
+        assert_eq!(parsed, original);
+    }
+
+    #[test]
+    fn test_retry_exponential_round_trips() {
+        let original = ServerUrl {
+            host: "example.com".to_string(),
+            port: 9000,
+            realm: "myrealm".parse().unwrap(),
+            retry: RetryWait::Exponential {
+                initial: Duration::from_millis(500),
+                constant: 2.0,
+                limit: Some(Duration::from_millis(60000)),
+                iteration: 0,
+            },
+        };
+        let parsed: ServerUrl = original.to_string().parse().unwrap();
+        assert_eq!(parsed, original);
+    }
+
+    #[test]
+    fn test_retry_exponential_without_limit_round_trips() {
+        let original = ServerUrl {
+            host: "example.com".to_string(),
+            port: 8768,
+            realm: RealmName::default(),
+            retry: RetryWait::Exponential {
+                initial: Duration::from_millis(500),
+                constant: 3.0,
+                limit: None,
+                iteration: 0,
+            },
+        };
+        let parsed: ServerUrl = original.to_string().parse().unwrap();
+        assert_eq!(parsed, original);
+    }
+
+    #[test]
+    fn test_retry_unknown_type_is_error() {
+        let result: Result<ServerUrl, _> = "example.com?type=bogus".parse();
+        assert!(result.is_err());
     }
 }
