@@ -1603,6 +1603,11 @@ impl<T: Data> ResidentVec<T> {
         self.inner.read().unwrap().len()
     }
 
+    /// Returns `true` if the vector contains no elements.
+    pub fn is_empty(&self) -> bool {
+        self.inner.read().unwrap().is_empty()
+    }
+
     /// Appends an element to the back of a collection.
     pub fn push(&self, value: T) -> Result<Resident<T>> {
         self.push_inner(value, false)
@@ -1768,22 +1773,6 @@ pub trait DataQuery<T: Data> {
         }
         true
     }
-}
-
-macro_rules! collect_conditions {
-    ($scan:ident, $condition:ident, $($conditions:ident),*) => {
-        match condition.clone() {
-            DataCondition::Equal(key, value) => scan
-                .secondary(key)?
-                .equal(value)?
-                .collect::<Result<Vec<_>, _>>()?,
-            DataCondition::Range(key, value) => {
-                let secondary = scan.secondary(key)?;
-                let it = secondary.range(value)?;
-                it.collect::<Result<Vec<_>, _>>()?
-            }
-        }
-    };
 }
 
 impl<T: Data> DataQuery<T> for () {
