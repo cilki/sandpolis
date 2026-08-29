@@ -7,7 +7,7 @@ use native_model::Model;
 use sandpolis_macros::data;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::fmt::{Display, Write};
+use std::fmt::Display;
 use std::str::FromStr;
 use strum::{EnumIter, IntoEnumIterator};
 use uuid::Uuid;
