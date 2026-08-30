@@ -1770,22 +1770,6 @@ pub trait DataQuery<T: Data> {
     }
 }
 
-macro_rules! collect_conditions {
-    ($scan:ident, $condition:ident, $($conditions:ident),*) => {
-        match condition.clone() {
-            DataCondition::Equal(key, value) => scan
-                .secondary(key)?
-                .equal(value)?
-                .collect::<Result<Vec<_>, _>>()?,
-            DataCondition::Range(key, value) => {
-                let secondary = scan.secondary(key)?;
-                let it = secondary.range(value)?;
-                it.collect::<Result<Vec<_>, _>>()?
-            }
-        }
-    };
-}
-
 impl<T: Data> DataQuery<T> for () {
     fn query(&self, scan: RScan) -> Result<Vec<T>> {
         Ok(scan.primary()?.all()?.collect::<Result<Vec<_>, _>>()?)
