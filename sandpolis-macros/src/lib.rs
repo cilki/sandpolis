@@ -339,6 +339,15 @@ pub fn data(args: TokenStream, input: TokenStream) -> TokenStream {
     tokens.into()
 }
 
+/// Normalize a stream type name to its base name by stripping the
+/// `Requester`/`Responder` suffix. The base name is what a stream's tag is
+/// hashed from, so the derive and the `stream_tag!` macro must agree on it.
+fn stream_base_name(name: &str) -> String {
+    name.trim_end_matches("Requester")
+        .trim_end_matches("Responder")
+        .to_string()
+}
+
 /// Hash a struct name to obtain the unique id
 fn struct_name_to_id(name: &str) -> u32 {
     let mut hasher = DefaultHasher::new();
@@ -360,11 +369,7 @@ fn struct_name_to_id(name: &str) -> u32 {
 pub fn stream_tag(input: TokenStream) -> TokenStream {
     let ident = parse_macro_input!(input as syn::Ident);
     // Accept the full struct name too, normalizing it the way the derive does.
-    let base_name = ident
-        .to_string()
-        .trim_end_matches("Requester")
-        .trim_end_matches("Responder")
-        .to_string();
+    let base_name = stream_base_name(&ident.to_string());
     let tag = struct_name_to_id(&base_name);
 
     TokenStream::from(quote! { #tag })
@@ -376,12 +381,8 @@ pub fn derive_stream_requester(input: TokenStream) -> TokenStream {
     let name = &input.ident;
     let krate = instance_crate();
     // TODO validate base name ends with one of these.
-    let base_name = &name
-        .to_string()
-        .trim_end_matches("Requester")
-        .trim_end_matches("Responder")
-        .to_string();
-    let type_tag = struct_name_to_id(base_name);
+    let base_name = stream_base_name(&name.to_string());
+    let type_tag = struct_name_to_id(&base_name);
 
     let expanded = quote! {
         impl #krate::network::stream::Stream for #name {
