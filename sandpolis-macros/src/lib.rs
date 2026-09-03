@@ -380,8 +380,22 @@ pub fn derive_stream_requester(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
     let krate = instance_crate();
-    // TODO validate base name ends with one of these.
-    let base_name = stream_base_name(&name.to_string());
+
+    // A stream type's base name is derived by stripping the `Requester`/
+    // `Responder` suffix, so the name must actually carry one — otherwise the
+    // base name (and thus the tag) would be computed from the full name and
+    // silently disagree with the convention the rest of the system relies on.
+    let name_str = name.to_string();
+    if !name_str.ends_with("Requester") && !name_str.ends_with("Responder") {
+        return syn::Error::new_spanned(
+            name,
+            "Stream type name must end with `Requester` or `Responder`",
+        )
+        .to_compile_error()
+        .into();
+    }
+
+    let base_name = stream_base_name(&name_str);
     let type_tag = struct_name_to_id(&base_name);
 
     let expanded = quote! {
