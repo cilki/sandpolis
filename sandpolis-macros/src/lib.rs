@@ -152,13 +152,7 @@ impl DataAttributes {
         } else if meta.path.is_ident("from") {
             self.from = Some(meta.value()?.parse()?);
         } else {
-            panic!(
-                "Unknown attribute: {}",
-                meta.path
-                    .get_ident()
-                    .map(|i| i.to_string())
-                    .unwrap_or_default()
-            );
+            return Err(meta.error("unrecognized `data` attribute"));
         }
         Ok(())
     }
