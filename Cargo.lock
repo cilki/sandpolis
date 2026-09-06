@@ -12374,6 +12374,9 @@ dependencies = [
  "sandpolis-macros",
  "sandpolis-probe",
  "serde",
+ "serde_cbor",
+ "sysinfo 0.39.6",
+ "tempfile",
  "tokio",
  "tracing",
 ]

@@ -18,6 +18,8 @@ sandpolis-instance = { path = "../sandpolis-instance", version = "0.0.1" }
 sandpolis-probe = { path = "../sandpolis-probe", version = "0.0.1", optional = true }
 sandpolis-macros = { path = "../sandpolis-macros", version = "0.0.1" }
 serde = { workspace = true }
+serde_cbor = { workspace = true, optional = true }
+sysinfo = { version = "0.39.3", optional = true }
 tokio = { workspace = true, optional = true }
 tracing = { workspace = true }
 
@@ -29,8 +31,12 @@ bevy = { workspace = true, optional = true }
 ratatui = { workspace = true, optional = true }
 color-eyre = { version = "0.6.3", optional = true }
 
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true }
+
 [features]
-agent = ["dep:notify"]
+agent = ["dep:notify", "dep:sysinfo", "dep:tokio"]
 # Browse probe devices that expose a filesystem (NFS, SMB). All protocol
 # handling lives in the probe subsystem behind `sandpolis_probe::filesystem`.
 probe = ["dep:sandpolis-probe"]
@@ -40,6 +46,7 @@ client = [
   "dep:sandpolis-client",
   "dep:ratatui",
   "dep:chrono",
+  "dep:serde_cbor",
   "dep:tokio",
   "dep:color-eyre",
   "sandpolis-client/client",

@@ -375,16 +375,21 @@ cd android && ./gradlew assembleDebug
 
 ## `sandpolis-filesystem`
 
-- GUI: delete, create folder, upload/download
+- GUI: delete, create folder, upload/download (the wire ops exist on both
+  paths; the panel buttons don't drive them yet)
 - Client can mount remote filesystems via FUSE
 - Probe devices are browsed through `sandpolis_probe::filesystem`, a
   protocol-agnostic interface (list/stat/read/write/create_dir/remove/rename/
   statfs) that the probe subsystem implements per protocol. This layer never
   sees NFS or SMB. The panel currently drives only list/stat/statfs; the
   mutating operations are already on the interface for the TODOs above.
-- The agent-side browser is still stubbed (`query_directory_contents`,
-  `query_filesystem_usage` return empty), and `FsSessionRequest` has no
-  responder, so only probe devices show live data today.
+- Agents are browsed over `FsSessionStream` (`session.rs`): opening a node's
+  panel opens one relayed session per agent, and a `List` arms a `notify`
+  watcher on the agent so changes to the shown directory push fresh listings
+  unprompted. Statfs resolves the disk containing the path via `sysinfo`.
+  CreateDir/Remove/Rename are answered on the agent but nothing sends them.
+- Both browsers render the listing as one bound label; clickable entries wait
+  on the shared table widget growing row virtualization (client subsystem).
 
 ## `sandpolis-desktop`
 

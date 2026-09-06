@@ -2,10 +2,11 @@
 //!
 //! Provides the file-browser node panel and the layer's client plugin.
 //!
-//! Note: interactive remote navigation and local file picking (via `rfd`) are
-//! deferred until the filesystem residents/queries return live data; today the
-//! directory query is a stub, so the panel surfaces disk usage plus the transfer
-//! actions.
+//! Agents are browsed over a live [`FsSessionStream`](crate::session): opening
+//! a node's panel opens the session, and the agent pushes fresh listings when
+//! the shown directory changes. Probe devices (NFS, SMB) are browsed through
+//! `sandpolis_probe::filesystem` instead. Local file picking (via `rfd`) and
+//! transfers are still deferred.
 
 use bevy::prelude::*;
 use sandpolis_client::gui::layer_visuals::utilization_tint;
@@ -22,43 +23,26 @@ use sandpolis_instance::{InstanceId, InstanceType, LayerName};
 /// nothing there.
 const SUMMARY_GAUGE_WIDTH: f32 = 160.0;
 
-/// Filesystem usage statistics.
-#[derive(Clone, Debug, Default)]
-pub struct FilesystemUsage {
-    pub total: u64,
-    pub used: u64,
-    pub free: u64,
-}
-
-/// File/directory entry.
-#[derive(Clone, Debug)]
-pub struct FileEntry {
-    pub name: String,
-    pub is_dir: bool,
-    pub size: u64,
-}
-
-/// Query filesystem usage for an instance.
-pub fn query_filesystem_usage(_id: InstanceId) -> anyhow::Result<FilesystemUsage> {
-    // TODO: Query from filesystem resident
-    Ok(FilesystemUsage::default())
-}
-
-/// Query directory contents.
-pub fn query_directory_contents(
-    _id: InstanceId,
-    _path: &std::path::Path,
-) -> anyhow::Result<Vec<FileEntry>> {
-    // TODO: Query from filesystem resident
-    Ok(vec![])
-}
-
-/// A gauge value describing an instance's disk usage.
-fn disk_usage(instance: InstanceId) -> GaugeValue {
-    let usage = query_filesystem_usage(instance).unwrap_or_default();
-    if usage.total == 0 {
-        return GaugeValue::new(0.0, "No filesystem data");
+fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut size = bytes as f64;
+    let mut unit = 0;
+    while size >= 1024.0 && unit < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit += 1;
     }
+    if unit == 0 {
+        format!("{bytes} {}", UNITS[0])
+    } else {
+        format!("{size:.1} {}", UNITS[unit])
+    }
+}
+
+/// Render space totals as the shared disk gauge value.
+fn usage_gauge(usage: Option<crate::session::FsUsage>) -> GaugeValue {
+    let Some(usage) = usage.filter(|usage| usage.total > 0) else {
+        return GaugeValue::new(0.0, "No filesystem data");
+    };
     GaugeValue::ratio(
         usage.used,
         usage.total,
@@ -86,20 +70,7 @@ impl NodePanel for FilesystemPanel {
         let Some(instance) = ctx.target.instance else {
             return;
         };
-        let theme = ctx.theme;
-        ctx.children(|p| {
-            p.spawn(Node {
-                width: Val::Px(SUMMARY_GAUGE_WIDTH),
-                flex_direction: FlexDirection::Column,
-                ..default()
-            })
-            .with_children(|slot| {
-                slot.spawn((
-                    gauge(theme, "Disk", disk_usage(instance)),
-                    bind_gauge(move || disk_usage(instance)),
-                ));
-            });
-        });
+        agent::build_summary(ctx, instance);
     }
 
     fn build_detail(&self, ctx: &mut PanelCtx) {
@@ -112,28 +83,114 @@ impl NodePanel for FilesystemPanel {
         let Some(instance) = ctx.target.instance else {
             return;
         };
+        agent::build_detail(ctx, instance);
+    }
+}
+
+/// Browsing agents over the [`FsSessionStream`](crate::session).
+mod agent {
+    use super::*;
+    use crate::session::client as fs_client;
+    use sandpolis_client::gui::ui::bind::bind_text;
+    use std::path::PathBuf;
+
+    /// Space totals reported by the agent, for the shared disk gauge.
+    fn usage(instance: InstanceId) -> GaugeValue {
+        usage_gauge(fs_client::view(instance).and_then(|view| view.usage))
+    }
+
+    /// Render the current directory as one label, like the probe browser: one
+    /// bound label until the shared table widget can scroll.
+    fn listing(instance: InstanceId) -> String {
+        let Some(view) = fs_client::view(instance) else {
+            return "Loading…".to_string();
+        };
+        if let Some(error) = view.error {
+            return error;
+        }
+        let Some(entries) = view.entries else {
+            return if view.busy {
+                "Loading…".to_string()
+            } else {
+                "Not listed yet".to_string()
+            };
+        };
+        if entries.is_empty() {
+            return "(Empty directory)".to_string();
+        }
+        entries
+            .iter()
+            .map(|entry| match entry.kind {
+                crate::session::FileKind::Dir => format!("{}/", entry.name),
+                _ => format!("{}  ({})", entry.name, human_size(entry.size)),
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The directory currently shown for an agent. A view exists before any
+    /// listing has landed, so an empty path falls back to the root too.
+    fn cwd(instance: InstanceId) -> PathBuf {
+        fs_client::view(instance)
+            .map(|view| view.cwd)
+            .filter(|cwd| cwd.components().next().is_some())
+            .unwrap_or_else(|| PathBuf::from("/"))
+    }
+
+    pub(super) fn build_summary(ctx: &mut PanelCtx, instance: InstanceId) {
+        let theme = ctx.theme;
+        ctx.children(|p| {
+            p.spawn(Node {
+                width: Val::Px(SUMMARY_GAUGE_WIDTH),
+                flex_direction: FlexDirection::Column,
+                ..default()
+            })
+            .with_children(|slot| {
+                slot.spawn((
+                    gauge(theme, "Disk", usage(instance)),
+                    bind_gauge(move || usage(instance)),
+                ));
+            });
+        });
+    }
+
+    pub(super) fn build_detail(ctx: &mut PanelCtx, instance: InstanceId) {
         let theme = ctx.theme;
         ctx.children(|p| {
             // Path bar.
             p.spawn(row(theme.metrics.space_sm)).with_children(|bar| {
-                bar.spawn(text(
-                    theme,
-                    "Remote path:",
-                    theme.metrics.font_md,
-                    Role::TextMuted,
-                ));
                 bar.spawn(button(theme, "Home"))
-                    .observe(move |_: On<Activate>| info!("Filesystem: go home on {}", instance));
-                bar.spawn(button(theme, "Up"))
-                    .observe(move |_: On<Activate>| info!("Filesystem: go up on {}", instance));
-                bar.spawn(text(theme, "/", theme.metrics.font_md, Role::Text));
+                    .observe(move |_: On<Activate>| {
+                        let _ = fs_client::browse(instance, PathBuf::from("/"));
+                    });
+                bar.spawn(button(theme, "Up")).observe(move |_: On<Activate>| {
+                    let current = cwd(instance);
+                    let parent = current
+                        .parent()
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|| PathBuf::from("/"));
+                    let _ = fs_client::browse(instance, parent);
+                });
+                bar.spawn(button(theme, "Refresh"))
+                    .observe(move |_: On<Activate>| {
+                        let _ = fs_client::browse(instance, cwd(instance));
+                    });
+                bar.spawn((
+                    text(theme, "/", theme.metrics.font_md, Role::Text),
+                    bind_text(move || cwd(instance).display().to_string()),
+                ));
             });
 
-            // File list (stub query → empty).
             p.spawn(heading(theme, "Remote Files"));
-            p.spawn(muted(theme, "(Empty directory)", theme.metrics.font_md));
+            p.spawn((
+                // Opening the panel is the request to see the directory; the
+                // session opens itself (see `manage_agent_sessions`).
+                AgentBrowser { instance },
+                text(theme, "", theme.metrics.font_md, Role::Text),
+                bind_text(move || listing(instance)),
+            ));
 
-            // Actions.
+            // Actions (transfers are still on the roadmap).
             p.spawn(row(theme.metrics.space_sm))
                 .with_children(|actions| {
                     actions.spawn(button(theme, "Download")).observe(
@@ -142,20 +199,56 @@ impl NodePanel for FilesystemPanel {
                     actions
                         .spawn(button(theme, "Upload"))
                         .observe(move |_: On<Activate>| info!("Filesystem: upload to {}", instance));
-                    actions
-                        .spawn(button(theme, "Delete"))
-                        .observe(move |_: On<Activate>| info!("Filesystem: delete on {}", instance));
-                    actions.spawn(button(theme, "New Folder")).observe(
-                        move |_: On<Activate>| info!("Filesystem: new folder on {}", instance),
-                    );
                 });
 
-            // Disk usage.
             p.spawn(heading(theme, "Disk Usage"));
             p.spawn((
-                gauge(theme, "Disk", disk_usage(instance)),
-                bind_gauge(move || disk_usage(instance)),
+                gauge(theme, "Disk", usage(instance)),
+                bind_gauge(move || usage(instance)),
             ));
+        });
+    }
+
+    /// An open file listing for an agent.
+    #[derive(Component)]
+    pub(super) struct AgentBrowser {
+        instance: InstanceId,
+    }
+
+    /// Agents with a session opened by this GUI, so the auto-browse below
+    /// doesn't refire every frame.
+    #[derive(Resource, Default)]
+    pub(super) struct BrowsedAgents(std::collections::HashSet<InstanceId>);
+
+    /// Open a session on any browser that hasn't loaded yet, and close the
+    /// session of any browser that went away.
+    ///
+    /// Checked every frame rather than on `Added` so a session that couldn't
+    /// open (no connection) is retried until it can.
+    pub(super) fn manage_agent_sessions(
+        mut browsed: ResMut<BrowsedAgents>,
+        browsers: Query<&AgentBrowser>,
+        mut open: Local<std::collections::HashSet<InstanceId>>,
+    ) {
+        open.clear();
+        for browser in &browsers {
+            open.insert(browser.instance);
+            if browsed.0.contains(&browser.instance) {
+                continue;
+            }
+            if fs_client::browse(browser.instance, cwd(browser.instance)).is_err() {
+                continue;
+            }
+            browsed.0.insert(browser.instance);
+        }
+        // Closing the panel closes the session; reopening it re-lists, which
+        // is how an agent that was unreachable gets retried.
+        browsed.0.retain(|instance| {
+            if open.contains(instance) {
+                return true;
+            }
+            fs_client::close(*instance);
+            false
         });
     }
 }
@@ -186,21 +279,13 @@ mod probe {
 
     /// Space totals reported by the device, for the shared disk gauge.
     fn usage(device_id: u64) -> GaugeValue {
-        let Some(usage) = probe_fs::view(device_id).and_then(|view| view.usage) else {
-            return GaugeValue::new(0.0, "No filesystem data");
-        };
-        if usage.total == 0 {
-            return GaugeValue::new(0.0, "No filesystem data");
-        }
-        GaugeValue::ratio(
-            usage.used,
-            usage.total,
-            format!(
-                "{:.1} GB / {:.1} GB",
-                usage.used as f64 / 1e9,
-                usage.total as f64 / 1e9
-            ),
-        )
+        usage_gauge(probe_fs::view(device_id).and_then(|view| view.usage).map(
+            |usage| crate::session::FsUsage {
+                total: usage.total,
+                used: usage.used,
+                free: usage.free,
+            },
+        ))
     }
 
     /// Render the current directory as one label. A reusable scrolling table is
@@ -231,21 +316,6 @@ mod probe {
             })
             .collect::<Vec<_>>()
             .join("\n")
-    }
-
-    fn human_size(bytes: u64) -> String {
-        const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-        let mut size = bytes as f64;
-        let mut unit = 0;
-        while size >= 1024.0 && unit < UNITS.len() - 1 {
-            size /= 1024.0;
-            unit += 1;
-        }
-        if unit == 0 {
-            format!("{bytes} {}", UNITS[0])
-        } else {
-            format!("{size:.1} {}", UNITS[unit])
-        }
     }
 
     /// The directory currently shown for a device. A view exists before any
@@ -372,11 +442,12 @@ mod probe {
 /// Tint a node by its disk usage while the Filesystem layer is active.
 ///
 /// The layer keeps its OS icon: what distinguishes a node here is how full it
-/// is, not what it runs.
+/// is, not what it runs. Only browsed agents have usage data; the rest stay
+/// untinted.
 fn node_tint(id: InstanceId) -> Color {
-    match query_filesystem_usage(id) {
-        Ok(usage) => utilization_tint(usage.used, usage.total),
-        Err(_) => Color::WHITE,
+    match crate::session::client::view(id).and_then(|view| view.usage) {
+        Some(usage) => utilization_tint(usage.used, usage.total),
+        None => Color::WHITE,
     }
 }
 
@@ -385,6 +456,9 @@ pub struct FilesystemClientPlugin;
 
 impl Plugin for FilesystemClientPlugin {
     fn build(&self, app: &mut App) {
+        app.init_resource::<agent::BrowsedAgents>();
+        app.add_systems(Update, agent::manage_agent_sessions);
+
         #[cfg(feature = "probe")]
         {
             app.init_resource::<probe::BrowsedDevices>();
