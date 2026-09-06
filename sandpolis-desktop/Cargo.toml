@@ -39,7 +39,6 @@ sandpolis-agent = { path = "../sandpolis-agent", version = "0.0.1", optional = t
 tokio = { workspace = true, optional = true }
 zstd = { version = "0.13", optional = true }
 image = { workspace = true, optional = true }
-log = { version = "0.4", optional = true }
 lazy_static = { version = "1.4", optional = true }
 cfg-if = { version = "1.0", optional = true }
 serde_json = { workspace = true, optional = true }
@@ -109,7 +108,6 @@ agent = [
   "dep:tokio",
   "dep:zstd",
   "dep:image",
-  "dep:log",
   "dep:lazy_static",
   "dep:cfg-if",
   "dep:serde_json",

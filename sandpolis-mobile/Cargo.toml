@@ -24,6 +24,8 @@ sandpolis = { path = "../sandpolis", version = "8.0.0", default-features = false
   "shell",
 ] }
 sandpolis-instance = { path = "../sandpolis-instance", version = "0.0.1" }
+tracing = { workspace = true }
+tracing-subscriber = "0.3"
 
 # Android-specific dependencies
 jni = "0.22.4"
@@ -31,3 +33,4 @@ ndk-context = "0.1"
 
 [target.'cfg(target_os = "android")'.dependencies]
 bevy = { workspace = true, features = ["android-game-activity"] }
+paranoid-android = "0.2"

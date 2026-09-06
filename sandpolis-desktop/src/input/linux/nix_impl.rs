@@ -258,7 +258,7 @@ impl KeyboardControllable for Enigo {
             if let Some(keyboard) = &mut self.custom_keyboard {
                 keyboard.key_sequence(sequence)
             } else {
-                log::warn!("Enigo::key_sequence: no custom_keyboard set for Wayland!");
+                tracing::warn!("Enigo::key_sequence: no custom_keyboard set for Wayland!");
             }
         }
     }
@@ -275,7 +275,7 @@ impl KeyboardControllable for Enigo {
             if let Some(keyboard) = &mut self.custom_keyboard {
                 keyboard.key_down(key)
             } else {
-                log::warn!("Enigo::key_down: no custom_keyboard set for Wayland!");
+                tracing::warn!("Enigo::key_down: no custom_keyboard set for Wayland!");
                 Ok(())
             }
         }
@@ -290,7 +290,7 @@ impl KeyboardControllable for Enigo {
             if let Some(keyboard) = &mut self.custom_keyboard {
                 keyboard.key_up(key)
             } else {
-                log::warn!("Enigo::key_up: no custom_keyboard set for Wayland!");
+                tracing::warn!("Enigo::key_up: no custom_keyboard set for Wayland!");
             }
         }
     }
@@ -305,7 +305,7 @@ impl KeyboardControllable for Enigo {
             if let Some(keyboard) = &mut self.custom_keyboard {
                 keyboard.key_click(key);
             } else {
-                log::warn!("Enigo::key_click: no custom_keyboard set for Wayland!");
+                tracing::warn!("Enigo::key_click: no custom_keyboard set for Wayland!");
             }
         }
     }

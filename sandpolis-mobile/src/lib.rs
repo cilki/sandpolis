@@ -23,13 +23,33 @@ fn get_android_files_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
 
 #[bevy_main]
 pub fn main() {
+    // Startup runs long before bevy's LogPlugin exists (and it's disabled
+    // anyway), and Android discards stderr, so without this any panic below
+    // aborts with no trace in logcat.
+    #[cfg(target_os = "android")]
+    {
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::level_filters::LevelFilter::INFO)
+            .with_writer(paranoid_android::AndroidLogMakeWriter::new(
+                "sandpolis".to_owned(),
+            ))
+            .without_time() // logcat adds its own timestamps
+            .with_ansi(false)
+            .init();
+        std::panic::set_hook(Box::new(|info| {
+            tracing::error!("{info}");
+        }));
+    }
+    #[cfg(not(target_os = "android"))]
+    tracing_subscriber::fmt().init();
+
     // Get ready to do some cryptography (ignore error if already installed)
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .unwrap()
+        .expect("failed to start tokio runtime")
         .block_on(async {
             // Set initial configuration with Android app data directory
             let mut options = RuntimeOptions::embedded();
@@ -40,7 +60,7 @@ pub fn main() {
                     options.database.storage = Some(files_dir);
                 }
                 Err(e) => {
-                    eprintln!("Failed to get Android files directory: {}", e);
+                    tracing::warn!("Failed to get Android files directory: {}", e);
                     // Fallback to ephemeral database
                     options.database.storage = None;
                 }
@@ -52,7 +72,7 @@ pub fn main() {
                 &sandpolis::MODELS,
                 sandpolis_instance::database::WriteAuthority::Full,
             )
-            .unwrap();
+            .expect("failed to open database");
 
             // Realm certs imported through the GUI are saved into the files
             // dir, so a fresh install holds none and the realm-selection
@@ -62,7 +82,7 @@ pub fn main() {
             let endpoint_certs = match &options.database.storage {
                 Some(dir) => sandpolis_instance::realm::load_realm_certs_dir(dir)
                     .unwrap_or_else(|e| {
-                        eprintln!("Ignoring saved realm certs: {}", e);
+                        tracing::warn!("Ignoring saved realm certs: {}", e);
                         Vec::new()
                     }),
                 None => Vec::new(),
@@ -72,7 +92,7 @@ pub fn main() {
                 endpoint_certs.clone(),
                 database.clone(),
             )
-            .unwrap();
+            .expect("failed to create realm manager");
 
             let state = InstanceState::new(
                 &options,
@@ -81,15 +101,19 @@ pub fn main() {
                 sandpolis::ServerStratum::Global,
             )
             .await
-            .unwrap();
+            .expect("failed to initialize instance state");
 
             for cert in &endpoint_certs {
                 match cert.url() {
                     Ok(url) => sandpolis::client::spawn_server_connection(state.clone(), url),
-                    Err(e) => eprintln!("Ignoring saved realm cert: {}", e),
+                    Err(e) => {
+                        tracing::warn!("Ignoring saved realm cert: {}", e);
+                    }
                 }
             }
 
-            sandpolis::client::gui::main(options, state).await.unwrap();
+            sandpolis::client::gui::main(options, state)
+                .await
+                .expect("GUI exited with error");
         });
 }

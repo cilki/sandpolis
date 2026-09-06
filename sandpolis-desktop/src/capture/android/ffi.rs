@@ -3,7 +3,6 @@
 
 use jni::Env;
 use jni::EnvUnowned;
-use jni::JNIVersion;
 use jni::errors::LogErrorAndDefault;
 use jni::errors::{Error as JniError, Result as JniResult};
 use jni::objects::JByteBuffer;
@@ -31,7 +30,7 @@ lazy_static! {
     static ref MAIN_SERVICE_CTX: RwLock<Option<GlobalObject>> = RwLock::new(None); // MainService -> video service / info
     static ref APPLICATION_CONTEXT: RwLock<Option<GlobalObject>> = RwLock::new(None);
     static ref VIDEO_RAW: Mutex<FrameRaw> = Mutex::new(FrameRaw::new("video", MAX_VIDEO_FRAME_TIMEOUT));
-    static ref NDK_CONTEXT_INITED: Mutex<bool> = Default::default();
+    static ref NDK_CONTEXT_LOCK: Mutex<()> = Default::default();
 }
 
 const MAX_VIDEO_FRAME_TIMEOUT: Duration = Duration::from_millis(100);
@@ -83,7 +82,7 @@ impl FrameRaw {
             None
         } else {
             if self.last_update.elapsed() > self.timeout {
-                log::trace!("Failed to take {} raw,timeout!", self.name);
+                tracing::trace!("Failed to take {} raw,timeout!", self.name);
                 return None;
             }
             let slice = unsafe { std::slice::from_raw_parts(ptr, self.len) };
@@ -148,7 +147,7 @@ pub extern "system" fn Java_ffi_FFI_init<'local>(
     _class: JClass<'local>,
     ctx: JObject<'local>,
 ) {
-    log::debug!("MainService init from java");
+    tracing::debug!("MainService init from java");
     env.with_env(|env| -> JniResult<()> {
         let jvm = env.get_java_vm()?;
         let java_vm = jvm.get_raw() as *mut c_void;
@@ -252,33 +251,17 @@ pub fn call_main_service_set_by_name(
     })
 }
 
-// Difference between MainService, MainActivity, JNI_OnLoad:
-//  jvm is the same, ctx is different and ctx of JNI_OnLoad is null.
-//  Service(GetByName, ...): only ctx from MainService works, so use 2 init context functions
-// On app start: JNI_OnLoad or MainActivity init context
-// On service start first time: MainService replace the context
-
+// android-activity's glue entry registers the activity context in ndk-context
+// at startup and asserts nothing registered before it — rustdesk's JNI_OnLoad
+// hook (which registered here at System.loadLibrary time, with a null context)
+// aborted every launch of the mobile app. So the glue owns the initial
+// registration, and the service can only ever *replace* it.
 fn init_ndk_context(java_vm: *mut c_void, context_jobject: *mut c_void) {
-    let mut lock = NDK_CONTEXT_INITED.lock().unwrap();
-    if *lock {
-        unsafe {
-            ndk_context::release_android_context();
-        }
-        *lock = false;
-    }
+    let _lock = NDK_CONTEXT_LOCK.lock().unwrap();
     unsafe {
+        ndk_context::release_android_context();
         ndk_context::initialize_android_context(java_vm, context_jobject);
     }
-    *lock = true;
-}
-
-// https://cjycode.com/flutter_rust_bridge/guides/how-to/ndk-init
-#[unsafe(no_mangle)]
-pub extern "C" fn JNI_OnLoad(vm: *mut jni::sys::JavaVM, res: *mut c_void) -> jni::sys::jint {
-    // SAFETY: the JVM always passes a valid `JavaVM` pointer to `JNI_OnLoad`.
-    let vm = unsafe { JavaVM::from_raw(vm) };
-    init_ndk_context(vm.get_raw() as *mut c_void, res);
-    JNIVersion::V1_6.into()
 }
 
 #[unsafe(no_mangle)]
@@ -289,11 +272,11 @@ pub extern "system" fn Java_ffi_FFI_onAppStart<'local>(
 ) {
     env.with_env(|env| -> JniResult<()> {
         if ctx.is_null() {
-            log::error!("application context is null");
+            tracing::error!("application context is null");
             return Ok(());
         }
         if APPLICATION_CONTEXT.read().unwrap().is_some() {
-            log::info!("application context already initialized");
+            tracing::info!("application context already initialized");
             return Ok(());
         }
         let context = env.new_global_ref(&ctx)?;

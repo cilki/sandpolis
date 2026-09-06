@@ -505,11 +505,11 @@ impl MouseControllable for Enigo {
     }
 
     fn mouse_move_to(&mut self, _x: i32, _y: i32) {
-        log::warn!("Mouse input is not supported on this platform");
+        tracing::warn!("Mouse input is not supported on this platform");
     }
 
     fn mouse_move_relative(&mut self, _x: i32, _y: i32) {
-        log::warn!("Mouse input is not supported on this platform");
+        tracing::warn!("Mouse input is not supported on this platform");
     }
 
     fn mouse_down(&mut self, _button: MouseButton) -> ResultType {
@@ -517,19 +517,19 @@ impl MouseControllable for Enigo {
     }
 
     fn mouse_up(&mut self, _button: MouseButton) {
-        log::warn!("Mouse input is not supported on this platform");
+        tracing::warn!("Mouse input is not supported on this platform");
     }
 
     fn mouse_click(&mut self, _button: MouseButton) {
-        log::warn!("Mouse input is not supported on this platform");
+        tracing::warn!("Mouse input is not supported on this platform");
     }
 
     fn mouse_scroll_x(&mut self, _length: i32) {
-        log::warn!("Mouse input is not supported on this platform");
+        tracing::warn!("Mouse input is not supported on this platform");
     }
 
     fn mouse_scroll_y(&mut self, _length: i32) {
-        log::warn!("Mouse input is not supported on this platform");
+        tracing::warn!("Mouse input is not supported on this platform");
     }
 }
 
@@ -544,7 +544,7 @@ impl KeyboardControllable for Enigo {
     }
 
     fn key_sequence(&mut self, _sequence: &str) {
-        log::warn!("Keyboard input is not supported on this platform");
+        tracing::warn!("Keyboard input is not supported on this platform");
     }
 
     fn key_down(&mut self, _key: Key) -> ResultType {
@@ -552,11 +552,11 @@ impl KeyboardControllable for Enigo {
     }
 
     fn key_up(&mut self, _key: Key) {
-        log::warn!("Keyboard input is not supported on this platform");
+        tracing::warn!("Keyboard input is not supported on this platform");
     }
 
     fn key_click(&mut self, _key: Key) {
-        log::warn!("Keyboard input is not supported on this platform");
+        tracing::warn!("Keyboard input is not supported on this platform");
     }
 
     fn get_key_state(&mut self, _key: Key) -> bool {

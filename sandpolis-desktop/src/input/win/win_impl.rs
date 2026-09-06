@@ -149,7 +149,7 @@ impl MouseControllable for Enigo {
                 MouseButton::Back => MOUSEEVENTF_XDOWN,
                 MouseButton::Forward => MOUSEEVENTF_XDOWN,
                 _ => {
-                    log::info!("Unsupported button {:?}", button);
+                    tracing::info!("Unsupported button {:?}", button);
                     return Ok(());
                 }
             },
@@ -179,7 +179,7 @@ impl MouseControllable for Enigo {
                 MouseButton::Back => MOUSEEVENTF_XUP,
                 MouseButton::Forward => MOUSEEVENTF_XUP,
                 _ => {
-                    log::info!("Unsupported button {:?}", button);
+                    tracing::info!("Unsupported button {:?}", button);
                     return;
                 }
             },

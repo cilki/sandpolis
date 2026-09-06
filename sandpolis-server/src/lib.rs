@@ -77,6 +77,11 @@ pub struct ServerManager {
 
     /// Outbound connections to servers
     pub outbound: Arc<RwLock<Vec<Arc<ServerConnection>>>>,
+
+    /// The tokio runtime this manager was created under, so connections can be
+    /// established from executors without a tokio context (the GUI polls
+    /// [`connect`](Self::connect) futures on bevy's task pools).
+    runtime: tokio::runtime::Handle,
 }
 
 impl ServerManager {
@@ -131,6 +136,7 @@ impl ServerManager {
             #[cfg(feature = "client")]
             servers: database.realm(RealmName::default())?.resident_vec(())?,
             outbound: Arc::new(RwLock::new(Vec::new())),
+            runtime: tokio::runtime::Handle::current(),
         })
     }
 
@@ -158,19 +164,22 @@ impl ServerManager {
         let cert = self.realms.find_endpoint_cert(url.realm.clone())?;
 
         let client_builder = || -> Result<reqwest::Client> {
+            // Only the realm CA may vouch for a server, so skip the platform
+            // trust store entirely — merging with it would also need
+            // rustls-platform-verifier, which can't take extra roots on Android.
             Ok(ClientBuilder::new()
-                .add_root_certificate(cert.root_certificate()?)
+                .tls_certs_only([cert.root_certificate()?])
                 .identity(cert.identity()?)
                 .resolve_to_addrs(
                     &format!("{}.{}", cert.cluster_id()?, cert.name),
                     &url.resolve()?,
                 )
-                .build()
-                .unwrap())
+                .build()?)
         };
 
         Ok(ServerConnection {
             inner: Arc::new(RwLock::new(None)),
+            runtime: self.runtime.clone(),
             strategy,
             client: Arc::new(tokio::sync::RwLock::new(Some(client_builder()?))),
             cancel: CancellationToken::new(),
@@ -197,6 +206,20 @@ impl ServerManager {
     /// `Continuous` via [`connect`](Self::connect).
     #[cfg(any(feature = "agent", feature = "client", feature = "server"))]
     pub async fn connect_with_strategy(
+        &self,
+        url: ServerUrl,
+        strategy: ServerConnectStrategy,
+    ) -> Result<ServerConnection> {
+        let this = self.clone();
+        self.runtime
+            .spawn(async move { this.connect_on_runtime(url, strategy).await })
+            .await?
+    }
+
+    /// [`connect_with_strategy`](Self::connect_with_strategy) minus the hop
+    /// onto the tokio runtime, which the sockets created here need.
+    #[cfg(any(feature = "agent", feature = "client", feature = "server"))]
+    async fn connect_on_runtime(
         &self,
         url: ServerUrl,
         strategy: ServerConnectStrategy,
@@ -266,6 +289,11 @@ impl Validate for ServerBanner {
 #[derive(Clone)]
 pub struct ServerConnection {
     client: Arc<tokio::sync::RwLock<Option<reqwest::Client>>>,
+
+    /// The tokio runtime whose reactor this connection's sockets belong to;
+    /// requests hop onto it so callers may poll from non-tokio executors
+    /// (the GUI uses bevy's task pools).
+    runtime: tokio::runtime::Handle,
     pub strategy: ServerConnectStrategy,
     pub cancel: CancellationToken,
     pub banner: ServerBanner,
@@ -476,10 +504,13 @@ impl ServerConnection {
         // during a `Polling` window. The strategy only governs the lifetime of
         // the long-lived sync websocket (see `open_websocket`).
         debug!(endpoint = %endpoint, "Sending request");
-        let guard = self.client.read().await;
-        let client = guard
+        let client = self
+            .client
+            .read()
+            .await
             .as_ref()
-            .ok_or_else(|| anyhow!("connection has no http client"))?;
+            .ok_or_else(|| anyhow!("connection has no http client"))?
+            .clone();
 
         let request = client
             .request(
@@ -494,15 +525,24 @@ impl ServerConnection {
             None => request,
         };
 
-        let response = request.body(body).send().await?;
+        // The send opens sockets, which need the tokio reactor even when the
+        // caller polls from a non-tokio executor; deserialization stays out
+        // here so `Response` needs no `Send + 'static` bounds.
+        let (status, bytes) = self
+            .runtime
+            .spawn(async move {
+                let response = request.body(body).send().await?;
+                let status = response.status();
+                let bytes = response.bytes().await?;
+                Ok::<_, anyhow::Error>((status, bytes))
+            })
+            .await??;
 
-        if response.status() == reqwest::StatusCode::UNAUTHORIZED
-            || response.status() == reqwest::StatusCode::FORBIDDEN
-        {
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
             return Err(AuthRequired.into());
         }
 
-        Ok(response.json().await?)
+        Ok(serde_json::from_slice(&bytes)?)
     }
 }
 

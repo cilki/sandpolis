@@ -177,7 +177,7 @@ impl Default for Enigo {
             let tm: f64 = unsafe { msg_send![ns_event, doubleClickInterval] };
             if tm > 0. {
                 double_click_interval = (tm * 1000.) as u32;
-                log::info!("double click interval: {}ms", double_click_interval);
+                tracing::info!("double click interval: {}ms", double_click_interval);
             }
         }
         Self {
@@ -287,7 +287,7 @@ impl MouseControllable for Enigo {
                 Some(MOUSE_EVENT_BUTTON_NUMBER_FORWARD),
             ),
             _ => {
-                log::info!("Unsupported button {:?}", button);
+                tracing::info!("Unsupported button {:?}", button);
                 return Ok(());
             }
         };
@@ -326,7 +326,7 @@ impl MouseControllable for Enigo {
                 Some(MOUSE_EVENT_BUTTON_NUMBER_FORWARD),
             ),
             _ => {
-                log::info!("Unsupported button {:?}", button);
+                tracing::info!("Unsupported button {:?}", button);
                 return;
             }
         };
@@ -831,7 +831,7 @@ unsafe fn get_layout() -> (TISInputSourceRef, *const u8) {
 
 #[inline]
 fn get_map(name: &str, layout: *const u8) -> Map<char, CGKeyCode> {
-    log::info!("Create keyboard map for {}", name);
+    tracing::info!("Create keyboard map for {}", name);
     let mut keys_down: u32 = 0;
     let mut map = Map::new();
     for keycode in 0..128 {

@@ -675,7 +675,11 @@ pub fn spawn_login_logo(
         return;
     }
 
-    if login_state.show || realm_state.show {
+    // The realm dialog nearly fills a phone's narrow screen, so the logo
+    // behind it would only bleed out around the edges there.
+    let realm_shows_logo =
+        cfg!(not(any(target_os = "android", target_os = "ios"))) && realm_state.show;
+    if login_state.show || realm_shows_logo {
         if logo_query.is_empty() {
             // Load the logo mesh from the glTF primitive; we apply our own
             // material below, so only the mesh is needed.

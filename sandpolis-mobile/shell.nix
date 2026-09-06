@@ -1,4 +1,4 @@
-{ pkgs ? import <nixpkgs> {
+{ pkgs ? import ../nix/nixpkgs.nix {
   config.allowUnfree = true;
   overlays = [
     (import (builtins.fetchTarball
@@ -10,11 +10,17 @@ with pkgs;
 
 let
   # Android SDK with minimal components needed for building APKs
-  android-nixpkgs = callPackage <android-nixpkgs> { channel = "stable"; };
+  android-nixpkgs = callPackage (fetchTarball {
+    url =
+      "https://github.com/tadfisher/android-nixpkgs/archive/9df60dbd7d9a31b33e564632e257b4a0dcd84fda.tar.gz";
+    sha256 = "0x96imzfw9627xl3izijahy51rq1r8f1nvsfh4vnmy7nilrv0qaz";
+  }) { channel = "stable"; };
 
   android-sdk = android-nixpkgs.sdk (sdkPkgs:
     with sdkPkgs; [
-      cmdline-tools-latest # SDK manager
+      # Not cmdline-tools-latest: recent versions replace the Java sdkmanager
+      # with a native `android` binary that isn't patchelf'd for nix
+      cmdline-tools-17-0 # SDK manager
       build-tools-34-0-0 # Required by gradle
       platforms-android-34 # API 34 for compilation
       ndk-26-1-10909125 # Native compilation for Rust

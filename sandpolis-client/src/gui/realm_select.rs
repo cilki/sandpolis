@@ -193,7 +193,16 @@ fn spawn_realm_select_modal(
                             "Choose File…"
                         };
                         row.spawn(button(theme, primary)).observe(on_realm_primary);
-                        row.spawn(button(theme, "Cancel")).observe(on_realm_cancel);
+                        // A mobile client is useless without a realm, so there
+                        // the dialog can't be dismissed; a failed connection
+                        // backs up to the picker phase instead.
+                        if cfg!(any(target_os = "android", target_os = "ios")) {
+                            if phase == 1 {
+                                row.spawn(button(theme, "Back")).observe(on_realm_back);
+                            }
+                        } else {
+                            row.spawn(button(theme, "Cancel")).observe(on_realm_cancel);
+                        }
                     });
                 });
         });
@@ -220,6 +229,14 @@ fn on_realm_primary(_activate: On<Activate>, mut state: ResMut<RealmSelectState>
     // it opens the file picker.
     state.loading = true;
     state.error_message = None;
+}
+
+/// Drop the imported-but-unreachable cert and return to the picker phase,
+/// keeping the dialog up (mobile's replacement for Cancel).
+fn on_realm_back(_activate: On<Activate>, mut state: ResMut<RealmSelectState>) {
+    state.loading = false;
+    state.error_message = None;
+    state.pending_cert = None;
 }
 
 fn on_realm_cancel(_activate: On<Activate>, mut state: ResMut<RealmSelectState>) {
@@ -463,12 +480,19 @@ fn launch_picker() -> anyhow::Result<()> {
     use jni::JavaVM;
     use ndk_context::android_context;
 
+    // ndk-context holds the `Application` (android-activity registers
+    // `activity.getApplication()`), which doesn't have the picker method; the
+    // Activity instance itself is in the `AndroidApp` that `#[bevy_main]` saved.
+    let app = bevy::android::ANDROID_APP
+        .get()
+        .ok_or_else(|| anyhow::anyhow!("AndroidApp not initialized"))?;
+
     let ctx = android_context();
     let vm = unsafe { JavaVM::from_raw(ctx.vm().cast()) };
 
     vm.attach_current_thread(|env| -> jni::errors::Result<()> {
-        // The context handed to the app is the activity itself.
-        let activity = unsafe { jni::objects::JObject::from_raw(env, ctx.context().cast()) };
+        let activity =
+            unsafe { jni::objects::JObject::from_raw(env, app.activity_as_ptr().cast()) };
         env.call_method(
             activity,
             jni::jni_str!("openRealmCertPicker"),

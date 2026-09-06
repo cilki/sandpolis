@@ -108,7 +108,7 @@ impl XdoLib {
                 .iter()
                 .find_map(|name| Library::new(*name).ok().map(|lib| (lib, *name)))?;
 
-            log::info!("libxdo-sys Loaded {}", lib_name);
+            tracing::info!("libxdo-sys Loaded {}", lib_name);
 
             let xdo_new: FnXdoNew = *lib.get(b"xdo_new").ok()?;
             let xdo_free: FnXdoFree = *lib.get(b"xdo_free").ok()?;
@@ -248,7 +248,7 @@ fn get_lib() -> Option<&'static XdoLib> {
         .get_or_init(|| {
             let lib = XdoLib::load();
             if lib.is_none() {
-                log::info!("libxdo-sys libxdo not found, xdo functions will be disabled");
+                tracing::info!("libxdo-sys libxdo not found, xdo functions will be disabled");
             }
             lib
         })

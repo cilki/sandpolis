@@ -53,7 +53,7 @@ fn check_x11_button_map() {
 
     let display: *mut Display = unsafe { XOpenDisplay(std::ptr::null()) };
     if display.is_null() {
-        log::warn!("XOpenDisplay failed, cannot check button map");
+        tracing::warn!("XOpenDisplay failed, cannot check button map");
         return;
     }
 
@@ -63,15 +63,15 @@ fn check_x11_button_map() {
     unsafe { XCloseDisplay(display) };
 
     if nbuttons < 0 {
-        log::warn!("XGetPointerMapping failed (returned {nbuttons})");
+        tracing::warn!("XGetPointerMapping failed (returned {nbuttons})");
         return;
     }
 
     let nbuttons = nbuttons as usize;
     if nbuttons >= MIN_POINTER_BUTTONS {
-        log::info!("X11 pointer has {nbuttons} buttons, side buttons supported");
+        tracing::info!("X11 pointer has {nbuttons} buttons, side buttons supported");
     } else {
-        log::warn!(
+        tracing::warn!(
             "X11 pointer has only {nbuttons} buttons (need {MIN_POINTER_BUTTONS}); \
              back/forward side buttons may not work until a device with more buttons is added"
         );
@@ -95,9 +95,9 @@ impl Default for EnigoXdo {
     fn default() -> Self {
         let xdo = unsafe { libxdo_sys::xdo_new(std::ptr::null()) };
         if xdo.is_null() {
-            log::warn!("Failed to create xdo context, xdo functions will be disabled");
+            tracing::warn!("Failed to create xdo context, xdo functions will be disabled");
         } else {
-            log::info!("xdo context created successfully");
+            tracing::info!("xdo context created successfully");
             check_x11_button_map();
         }
         Self {
@@ -125,7 +125,7 @@ impl EnigoXdo {
     pub fn set_delay(&mut self, delay: u64) {
         self.delay = delay.min(MAX_DELAY);
         if delay > MAX_DELAY {
-            log::warn!(
+            tracing::warn!(
                 "delay value {} exceeds maximum {}, clamped",
                 delay,
                 MAX_DELAY

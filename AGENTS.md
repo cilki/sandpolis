@@ -456,3 +456,4 @@ cd android && ./gradlew assembleDebug
     in the GUI.
 - When rustls gets a working DTLS implementation, coordinate DTLS "connection"
   directly between agents and clients
+- If there's only one domain, don't show a terrain
