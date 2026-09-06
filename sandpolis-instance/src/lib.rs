@@ -463,6 +463,16 @@ impl InstanceManager {
         // more than once.
         crate::notification::install(&realm, instance_id);
 
+        // The OS is a property of wherever the instance is running right now,
+        // so it's refreshed on every start; `update` is a no-op when nothing
+        // changed. This must come after `set_self` above, which is what makes
+        // the row's scope writable.
+        let os_info = os_info::get();
+        data.update(|d| {
+            d.os_info = os_info.clone();
+            Ok(())
+        })?;
+
         Ok(Self {
             instance_id,
             cluster_id: { data.read().cluster_id },

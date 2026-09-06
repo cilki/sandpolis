@@ -75,6 +75,7 @@ impl ServiceRunner {
                 key: key.clone(),
                 running: Mutex::new(None),
                 notify: Notify::new(),
+                last_error: Mutex::new(None),
             });
 
             if supervisor.reconcile()? {
@@ -145,6 +146,11 @@ struct Supervisor {
 
     /// Wakes a periodic service's next pass early.
     notify: Notify,
+
+    /// The previous pass's error, so a service failing the same way every pass
+    /// (a display enumerator on a headless host, say) warns once instead of
+    /// once per pass. The row's `last_error` still records every failure.
+    last_error: Mutex<Option<String>>,
 }
 
 impl Supervisor {
@@ -287,14 +293,28 @@ impl Supervisor {
 
         let result = self.service.run(cancel.clone()).await;
         match &result {
-            Ok(report) => debug!(
-                service = %self.key,
-                scanned = report.scanned,
-                updated = report.updated,
-                failed = report.failed,
-                "Service pass finished"
-            ),
-            Err(e) => warn!(service = %self.key, error = %e, "Service pass failed"),
+            Ok(report) => {
+                if self.last_error.lock().unwrap().take().is_some() {
+                    info!(service = %self.key, "Service pass succeeded again");
+                }
+                debug!(
+                    service = %self.key,
+                    scanned = report.scanned,
+                    updated = report.updated,
+                    failed = report.failed,
+                    "Service pass finished"
+                )
+            }
+            Err(e) => {
+                let error = e.to_string();
+                let mut last_error = self.last_error.lock().unwrap();
+                if last_error.as_deref() == Some(&error) {
+                    debug!(service = %self.key, error = %error, "Service pass failed the same way");
+                } else {
+                    warn!(service = %self.key, error = %error, "Service pass failed");
+                    *last_error = Some(error);
+                }
+            }
         }
 
         // Bookkeeping is best-effort: losing a run record is not a reason to
@@ -552,6 +572,7 @@ mod tests {
                 key: key.to_string(),
                 running: Mutex::new(None),
                 notify: Notify::new(),
+                last_error: Mutex::new(None),
             })
         };
 
