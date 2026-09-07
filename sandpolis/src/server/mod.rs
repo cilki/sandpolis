@@ -305,6 +305,22 @@ pub async fn main(options: RuntimeOptions, state: InstanceState) -> Result<()> {
         )?;
     }
 
+    // Probe "scanning mode": sweep the local network for devices and register
+    // them credential-less. Off unless the realm config enables it.
+    #[cfg(feature = "probe")]
+    {
+        let scan = options.merged_probe_config().scan;
+        // Stamp discovered devices with this server's URL so the persist hook
+        // routes them to the primary realm.
+        let server_url = default_realm_url(&options).ok().map(|mut url| {
+            if let Some(realm) = options.realms.first() {
+                url.realm = realm.name.clone();
+            }
+            url
+        });
+        sandpolis_probe::register_server_services(&scan, server_url, &mut services);
+    }
+
     // Snapshot storage lives on the server's filesystem, next to the realm
     // database but never inside it. The ownership gate mirrors CVE matching:
     // only the owner of an agent's data records snapshots for it.

@@ -7,7 +7,7 @@ version = "0.0.1"
 
 [dependencies]
 anyhow = { workspace = true }
-arp-toolkit = { version = "0.3.2", optional = true }
+arp-toolkit = { version = "0.3.2", optional = true, features = ["sync"] }
 bollard = { workspace = true, optional = true }
 clap = { workspace = true, optional = true }
 futures = { workspace = true }
@@ -16,6 +16,7 @@ ipmi-rs = { version = "0.6.0", optional = true }
 macaddr = { workspace = true }
 nfs3_client = { version = "0.9", optional = true, features = ["tokio"] }
 openh264 = { version = "0.9", optional = true }
+pnet = { version = "0.34", optional = true }
 rasn-snmp = { version = "0.28.13", optional = true }
 retina = { version = "0.4", optional = true }
 rups = { version = "0.6", optional = true }
@@ -62,6 +63,8 @@ agent = [
 # Only servers connect to probes, so the filesystem protocol clients are here
 # and not in `agent`.
 server = [
+  "dep:arp-toolkit",
+  "dep:pnet",
   "dep:bollard",
   "dep:nfs3_client",
   "dep:smb",

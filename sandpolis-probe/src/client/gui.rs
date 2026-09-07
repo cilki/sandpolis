@@ -8,7 +8,9 @@ use bevy::text::EditableText;
 use bevy_rapier2d::dynamics::{Damping, ExternalForce, RigidBody, Velocity};
 use bevy_rapier2d::geometry::{Collider, Restitution};
 use bevy_svg::prelude::{Origin, Svg2d};
-use sandpolis_client::gui::node::{NeedsScaling, NodeEntity, NodeHitbox, NodeIdentity, SubNode};
+use sandpolis_client::gui::node::{
+    NeedsCredentials, NeedsScaling, NodeEntity, NodeHitbox, NodeIdentity, SubNode,
+};
 use sandpolis_client::gui::ui::Activate;
 use sandpolis_client::gui::ui::bind::bind_text;
 use sandpolis_client::gui::ui::layer::{LayerClientInfo, LayerRegistry, RegisterLayerClient};
@@ -241,6 +243,28 @@ pub fn update_probe_nodes(
     for (entity, probe) in existing_probes.iter() {
         if !db_ids.contains(&probe.device_id) {
             commands.entity(entity).despawn();
+        }
+    }
+}
+
+/// Toggle the [`NeedsCredentials`] marker on each device node to match whether
+/// its device still lacks credentials it needs. The generic
+/// `update_credential_visuals` effect renders the marker.
+pub fn update_credential_markers(
+    mut commands: Commands,
+    probe_nodes: Query<(Entity, &ProbeNode, Has<NeedsCredentials>)>,
+) {
+    let devices = crate::REGISTERED_DEVICES.read().unwrap();
+    for (entity, probe, marked) in probe_nodes.iter() {
+        let needs = devices
+            .iter()
+            .find(|d| d.id.body() == probe.device_id)
+            .is_some_and(|d| d.device.needs_credentials());
+
+        if needs && !marked {
+            commands.entity(entity).insert(NeedsCredentials);
+        } else if !needs && marked {
+            commands.entity(entity).remove::<NeedsCredentials>();
         }
     }
 }
@@ -1635,6 +1659,7 @@ impl Plugin for ProbeClientPlugin {
             (
                 scale_probe_node_svgs,
                 update_probe_nodes,
+                update_credential_markers,
                 apply_probe_spring_forces,
                 manage_register_probe,
                 focus_register_probe_input,

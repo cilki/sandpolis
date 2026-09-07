@@ -4,7 +4,11 @@
 //! to represent devices such as SSH hosts, IPMI-enabled servers, UPS devices,
 //! cameras, and more.
 
-use config::{DeviceConfig, ProbeManagerConfig};
+use config::{
+    DeviceConfig, DockerProbeConfig, HttpProbeConfig, NfsProbeConfig, OnvifProbeConfig,
+    ProbeManagerConfig, RdpProbeConfig, RtspProbeConfig, SmbProbeConfig, SnmpVersion,
+    SshProbeConfig, VncProbeConfig,
+};
 use sandpolis_instance::InstanceId;
 use sandpolis_instance::config::ConfigPersistHook;
 use serde::{Deserialize, Serialize};
@@ -21,6 +25,8 @@ pub mod nfs;
 pub mod onvif;
 pub mod rdp;
 pub mod rtsp;
+#[cfg(feature = "server")]
+pub mod scan;
 pub mod service;
 pub mod smb;
 pub mod snmp;
@@ -69,11 +75,32 @@ pub fn persist_devices(devices: &[RegisteredDevice]) {
     DEVICE_PERSIST.persist(devices);
 }
 
-/// Rebuild the on-disk config from the current device list.
+/// Rebuild the on-disk config from the current device list. Only the device
+/// list is reconstructed here; the persist hook writes it into the realm's
+/// existing probe section, so the `scan` settings on disk are left untouched.
 pub fn devices_to_config(devices: &[RegisteredDevice]) -> ProbeManagerConfig {
     ProbeManagerConfig {
         devices: devices.iter().map(|d| d.device.clone()).collect(),
+        scan: Default::default(),
     }
+}
+
+/// Register the probe subsystem's server-side background services on `runner`.
+/// Currently just the discovery scanner, and only when it's enabled in config.
+///
+/// `server` is stamped onto discovered devices so persistence routes them to the
+/// right realm; pass the server's own URL, or `None` for the single-realm case.
+#[cfg(feature = "server")]
+pub fn register_server_services(
+    scan: &config::ScanConfig,
+    server: Option<sandpolis_server::ServerUrl>,
+    runner: &mut sandpolis_instance::service::ServiceRunner,
+) {
+    if !scan.enabled {
+        tracing::info!("Probe scanning mode is disabled");
+        return;
+    }
+    runner.register(scan::ScanService::new(scan.clone(), server));
 }
 
 /// Manages device registrations and streaming state.
@@ -210,6 +237,33 @@ impl ProbeType {
     pub fn is_service(&self) -> bool {
         matches!(self, ProbeType::Docker | ProbeType::Libvirt)
     }
+
+    /// The default TCP port this protocol listens on, for protocols the scanner
+    /// can detect with a TCP connection. Returns `None` for UDP-only or
+    /// connectionless protocols (SNMP, IPMI, UPS, Wake-on-LAN), which discovery
+    /// doesn't probe.
+    pub fn default_port(&self) -> Option<u16> {
+        Some(match self {
+            ProbeType::Ssh => 22,
+            ProbeType::Rdp => 3389,
+            ProbeType::Vnc => 5900,
+            ProbeType::Http => 80,
+            ProbeType::Rtsp => 554,
+            ProbeType::Onvif => 80,
+            ProbeType::Docker => 2375,
+            ProbeType::Smb => 445,
+            ProbeType::Nfs => 111,
+            ProbeType::Snmp | ProbeType::Ipmi | ProbeType::Ups | ProbeType::Libvirt | ProbeType::Wol => {
+                return None;
+            }
+        })
+    }
+
+    /// Whether a live host can be detected as speaking this protocol by opening
+    /// a TCP connection to its [`default_port`](Self::default_port).
+    pub fn is_tcp_scannable(&self) -> bool {
+        self.default_port().is_some()
+    }
 }
 
 sandpolis_instance::typed_id!(
@@ -321,6 +375,117 @@ impl DeviceConfig {
             .filter(ProbeType::is_service)
             .collect()
     }
+
+    /// Record that this device speaks `protocol`, populating a credential-less
+    /// sub-config addressed at the device's [`ip`](DeviceConfig::ip). Used by
+    /// the discovery scanner; an existing sub-config for the protocol is left
+    /// untouched. A no-op for protocols the scanner can't detect.
+    pub fn add_detected(&mut self, protocol: ProbeType) {
+        let host = self.ip.to_string();
+        match protocol {
+            ProbeType::Ssh if self.ssh.is_none() => {
+                self.ssh = Some(SshProbeConfig {
+                    host,
+                    ..Default::default()
+                });
+            }
+            ProbeType::Rdp if self.rdp.is_none() => {
+                self.rdp = Some(RdpProbeConfig {
+                    host,
+                    ..Default::default()
+                });
+            }
+            ProbeType::Vnc if self.vnc.is_none() => {
+                self.vnc = Some(VncProbeConfig {
+                    host,
+                    ..Default::default()
+                });
+            }
+            ProbeType::Http if self.http.is_none() => {
+                self.http = Some(HttpProbeConfig {
+                    url: format!("http://{host}/"),
+                    ..Default::default()
+                });
+            }
+            ProbeType::Rtsp if self.rtsp.is_none() => {
+                self.rtsp = Some(RtspProbeConfig::default());
+            }
+            ProbeType::Onvif if self.onvif.is_none() => {
+                self.onvif = Some(OnvifProbeConfig {
+                    host,
+                    ..Default::default()
+                });
+            }
+            ProbeType::Docker if self.docker.is_none() => {
+                self.docker = Some(DockerProbeConfig {
+                    host: format!("tcp://{host}:2375"),
+                    ..Default::default()
+                });
+            }
+            ProbeType::Smb if self.smb.is_none() => {
+                self.smb = Some(SmbProbeConfig::default());
+            }
+            ProbeType::Nfs if self.nfs.is_none() => {
+                self.nfs = Some(NfsProbeConfig::default());
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether any protocol this device exposes can authenticate but hasn't been
+    /// given credentials yet — the state a freshly discovered device is in until
+    /// an operator fills them in. Drives the client's credential node effect.
+    ///
+    /// Protocols that don't authenticate (Wake-on-LAN, NFS's AUTH_UNIX, plain
+    /// HTTP, unauthenticated Docker, libvirt) never contribute.
+    pub fn needs_credentials(&self) -> bool {
+        if let Some(c) = &self.ssh
+            && c.password.is_none()
+            && c.private_key_path.is_none()
+        {
+            return true;
+        }
+        if let Some(c) = &self.rdp
+            && c.password.is_none()
+        {
+            return true;
+        }
+        if let Some(c) = &self.vnc
+            && c.password.is_none()
+        {
+            return true;
+        }
+        if let Some(c) = &self.rtsp
+            && c.password.is_none()
+        {
+            return true;
+        }
+        if let Some(c) = &self.onvif
+            && c.password.is_none()
+        {
+            return true;
+        }
+        if let Some(c) = &self.smb
+            && c.password.is_none()
+        {
+            return true;
+        }
+        if let Some(c) = &self.ipmi
+            && (c.username.is_empty() || c.password.is_empty())
+        {
+            return true;
+        }
+        if let Some(c) = &self.snmp {
+            let missing = match c.version {
+                SnmpVersion::V1 | SnmpVersion::V2c => c.community.is_none(),
+                SnmpVersion::V3 => c.username.is_none(),
+            };
+            if missing {
+                return true;
+            }
+        }
+        false
+    }
 }
 
 // What a client must be granted to open this layer's streams.
@@ -343,4 +508,74 @@ inventory::submit! {
 inventory::submit! {
     sandpolis_instance::network::stream::StreamPermission::require(
         sandpolis_macros::stream_tag!(ProbeServiceStream), "probe:service")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    fn device() -> DeviceConfig {
+        DeviceConfig {
+            ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5)),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn scannable_types_have_a_port() {
+        for t in ProbeType::all() {
+            assert_eq!(t.is_tcp_scannable(), t.default_port().is_some());
+        }
+        assert_eq!(ProbeType::Ssh.default_port(), Some(22));
+        assert_eq!(ProbeType::Smb.default_port(), Some(445));
+        assert!(ProbeType::Snmp.default_port().is_none());
+        assert!(ProbeType::Wol.default_port().is_none());
+    }
+
+    #[test]
+    fn add_detected_populates_only_its_own_field() {
+        let mut d = device();
+        d.add_detected(ProbeType::Ssh);
+        assert_eq!(d.protocols(), vec![ProbeType::Ssh]);
+        assert_eq!(d.ssh.as_ref().unwrap().host, "10.0.0.5");
+
+        d.add_detected(ProbeType::Smb);
+        assert!(d.protocols().contains(&ProbeType::Smb));
+        // Detecting the same protocol again doesn't clobber an existing config.
+        d.ssh.as_mut().unwrap().password = Some("secret".into());
+        d.add_detected(ProbeType::Ssh);
+        assert_eq!(d.ssh.as_ref().unwrap().password.as_deref(), Some("secret"));
+    }
+
+    #[test]
+    fn discovered_device_needs_credentials_until_filled() {
+        let mut d = device();
+        d.add_detected(ProbeType::Ssh);
+        assert!(d.needs_credentials());
+
+        d.ssh.as_mut().unwrap().password = Some("hunter2".into());
+        assert!(!d.needs_credentials());
+    }
+
+    #[test]
+    fn ssh_key_counts_as_credentials() {
+        let mut d = device();
+        d.add_detected(ProbeType::Ssh);
+        d.ssh.as_mut().unwrap().private_key_path = Some("/root/.ssh/id_ed25519".into());
+        assert!(!d.needs_credentials());
+    }
+
+    #[test]
+    fn credential_free_protocols_never_flag() {
+        // NFS (AUTH_UNIX), Wake-on-LAN, and plain HTTP don't authenticate.
+        let mut d = device();
+        d.add_detected(ProbeType::Nfs);
+        d.add_detected(ProbeType::Http);
+        d.wol = Some(config::WolProbeConfig {
+            mac_address: "f4:4d:30:62:c0:45".into(),
+            ..Default::default()
+        });
+        assert!(!d.needs_credentials());
+    }
 }

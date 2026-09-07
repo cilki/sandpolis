@@ -44,6 +44,13 @@ pub struct PanelPinned;
 #[derive(Component)]
 pub struct Offline;
 
+/// Marker for nodes whose backing device is missing credentials it needs (e.g. a
+/// probe discovered by scanning that no one has configured yet). Inserted and
+/// removed by the layer that owns the device; the credential node effect draws
+/// from it.
+#[derive(Component)]
+pub struct NeedsCredentials;
+
 /// Marker for nodes that the generic node-selection handler must ignore (e.g.
 /// probe/device nodes, which have their own per-device selection). These nodes
 /// share their gateway's `InstanceId`, so the selection set can't tell them

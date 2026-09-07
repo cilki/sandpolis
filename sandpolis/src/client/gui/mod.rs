@@ -63,7 +63,8 @@ use sandpolis_client::gui::login::{
 use sandpolis_client::gui::minimap::{MinimapViewport, spawn_minimap, update_minimap};
 use sandpolis_client::gui::node::{NodeEntity, WorldView, scale_node_svgs, spawn_node};
 use sandpolis_client::gui::node_effects::{
-    spin_selection_rings, update_offline_markers, update_offline_visuals, update_selection_visuals,
+    spin_selection_rings, update_credential_visuals, update_offline_markers, update_offline_visuals,
+    update_selection_visuals,
 };
 use sandpolis_client::gui::node_panel::NodePanelPlugin;
 use sandpolis_client::gui::node_picker::{
@@ -278,6 +279,9 @@ pub async fn main(options: RuntimeOptions, state: InstanceState) -> Result<()> {
             spin_selection_rings,
             // Offline node effect. The scrim follows the marker in the same frame.
             (update_offline_markers, update_offline_visuals).chain(),
+            // Credential-warning ring. The marker is toggled by the probe layer;
+            // this only renders it.
+            update_credential_visuals,
             // Drag systems
             start_node_drag,
             update_node_drag,

@@ -333,11 +333,9 @@ cd android && ./gradlew assembleDebug
 
 ## `sandpolis-probe`
 
+- FTP(S) probe
 - HTTP probe (`http.rs`)
   - Drive from health layer?
-- ONVIF probe (`onvif.rs`)
-  - View the video stream
-  - Driven from the desktop layer?
 - RDP probe via desktop subsystem (`rdp.rs`, on the IronRDP crates)
   - Driven from the desktop layer, like VNC
   - First cut negotiates TLS security; hosts requiring NLA/CredSSP need
@@ -367,8 +365,6 @@ cd android && ./gradlew assembleDebug
     `curve25519-dalek`/`ed25519-dalek`/`p256` that no published `russh` agrees
     with — cargo cannot resolve both. Those pins are macOS/iOS-only and upstream
     has dropped them; delete the patch once 0.21.4 is out.
-  - Only the mapping helpers are unit-tested. The wire protocol is verified by
-    hand against the Samba server in `sandpolis-probe/tests/`, as is NFS.
 - Node panels on probes in probe layer just show what protocols are supported -
   to interact with probes, you use a more specific layer like desktop,
   filesystem, etc.

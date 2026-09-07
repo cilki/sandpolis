@@ -64,6 +64,40 @@ mod server {
         let _ = DEVICE_BROADCAST.send(devices);
     }
 
+    /// Register devices found by the discovery scanner, skipping any address
+    /// that's already registered (whether hand-authored or previously
+    /// discovered). Returns how many were newly added. Persists and broadcasts
+    /// exactly like a manual [`Register`](DeviceMgmtRequest::Register).
+    pub fn add_discovered(discovered: Vec<DeviceConfig>) -> usize {
+        let Some(gateway) = crate::gateway() else {
+            tracing::warn!("Ignoring discovered devices before this server's id is known");
+            return 0;
+        };
+
+        let mut added = 0;
+        {
+            let mut devices = REGISTERED_DEVICES.write().unwrap();
+            for device in discovered {
+                if devices.iter().any(|d| d.device.ip == device.ip) {
+                    continue;
+                }
+                devices.push(RegisteredDevice {
+                    id: crate::ProbeId::random(),
+                    gateway,
+                    device,
+                    online: false,
+                    status_message: None,
+                });
+                added += 1;
+            }
+        }
+
+        if added > 0 {
+            commit();
+        }
+        added
+    }
+
     /// Server side of the management stream.
     #[derive(Stream, Default)]
     pub struct DeviceMgmtResponder;
@@ -224,6 +258,9 @@ mod client {
         send_request(conn, DeviceMgmtRequest::Delete { id });
     }
 }
+
+#[cfg(feature = "server")]
+pub use server::add_discovered;
 
 #[cfg(feature = "client")]
 pub use client::{DeviceMgmtRequester, delete_device, register_device, subscribe};

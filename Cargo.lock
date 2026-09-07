@@ -12535,6 +12535,7 @@ dependencies = [
  "macaddr",
  "nfs3_client",
  "openh264",
+ "pnet",
  "rasn-snmp",
  "ratatui",
  "retina",

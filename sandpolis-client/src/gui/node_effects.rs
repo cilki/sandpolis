@@ -11,7 +11,7 @@
 //! Selection *state* (the [`Selected`] marker, the click handling, the count
 //! badge) lives in [`super::drag`]; this module only renders it.
 
-use crate::gui::node::{NodeEntity, NodeHitbox, Offline, Selected};
+use crate::gui::node::{NeedsCredentials, NodeEntity, NodeHitbox, Offline, Selected};
 use crate::gui::ui::theme::{Role, Theme};
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
@@ -46,6 +46,15 @@ const SELECTION_ALPHA: f32 = 0.6;
 
 /// Opacity of the offline scrim.
 const OFFLINE_ALPHA: f32 = 0.55;
+
+/// Opacity of the credential-warning ring.
+const CREDENTIAL_ALPHA: f32 = 0.85;
+
+/// Inner radius of the credential-warning ring, past the node's hitbox.
+const CREDENTIAL_RING_INNER: f32 = 2.0;
+
+/// Outer radius of the credential-warning ring, past the node's hitbox.
+const CREDENTIAL_RING_OUTER: f32 = 6.0;
 
 /// How a selected node is drawn.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -262,6 +271,66 @@ pub fn update_offline_visuals(
                 MeshMaterial2d(materials.add(ColorMaterial::from(color))),
                 Transform::from_xyz(0.0, 0.0, 0.1), // In front of the node
                 OfflineScrim { node_entity },
+            ));
+        });
+    }
+}
+
+/// Marks the warning ring drawn around a node missing credentials.
+#[derive(Component)]
+pub struct CredentialWarning {
+    pub node_entity: Entity,
+}
+
+/// Spawn / despawn the credential-warning ring to match the
+/// [`NeedsCredentials`] markers.
+///
+/// A solid [`Role::Warn`] annulus hugging the node's edge, drawn in front of it
+/// (and of the offline scrim) so a probe that still needs credentials reads
+/// distinctly from the accent selection ring and the background offline scrim.
+pub fn update_credential_visuals(
+    mut commands: Commands,
+    theme: Res<Theme>,
+    flagged_nodes: Query<(Entity, &NodeHitbox), With<NeedsCredentials>>,
+    rings: Query<(Entity, &CredentialWarning, &MeshMaterial2d<ColorMaterial>)>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
+    let color = theme.color(Role::Warn).with_alpha(CREDENTIAL_ALPHA);
+
+    if theme.is_changed() {
+        for (_, _, handle) in rings.iter() {
+            if let Some(mut material) = materials.get_mut(&handle.0) {
+                material.color = color;
+            }
+        }
+    }
+
+    for (ring_entity, ring, _) in rings.iter() {
+        if !flagged_nodes.contains(ring.node_entity) {
+            commands.entity(ring_entity).despawn();
+        }
+    }
+
+    for (node_entity, hitbox) in flagged_nodes.iter() {
+        let has_ring = rings
+            .iter()
+            .any(|(_, ring, _)| ring.node_entity == node_entity);
+        if has_ring {
+            continue;
+        }
+
+        let mesh = Mesh::from(Annulus::new(
+            hitbox.radius + CREDENTIAL_RING_INNER,
+            hitbox.radius + CREDENTIAL_RING_OUTER,
+        ));
+
+        commands.entity(node_entity).with_children(|parent| {
+            parent.spawn((
+                Mesh2d(meshes.add(mesh)),
+                MeshMaterial2d(materials.add(ColorMaterial::from(color))),
+                Transform::from_xyz(0.0, 0.0, 0.2), // In front, above the offline scrim
+                CredentialWarning { node_entity },
             ));
         });
     }

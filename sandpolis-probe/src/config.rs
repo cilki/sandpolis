@@ -4,8 +4,55 @@ use serde::Serialize;
 use std::net::IpAddr;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+#[serde(default)]
 pub struct ProbeManagerConfig {
     pub devices: Vec<DeviceConfig>,
+    /// Automatic network discovery. See [`ScanConfig`].
+    pub scan: ScanConfig,
+}
+
+/// Settings for probe "scanning mode": the server periodically sweeps the
+/// network for reachable devices and registers them without credentials, which
+/// an operator fills in later by editing the device in the realm config.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct ScanConfig {
+    /// Whether the discovery service runs at all. Off by default: it sends ARP
+    /// traffic and opens TCP connections across the local network, which not
+    /// every deployment wants.
+    pub enabled: bool,
+
+    /// IPv4 CIDR ranges to scan (e.g. `"10.0.0.0/24"`). When empty, the ranges
+    /// are auto-detected from the server's own network interfaces. ARP
+    /// discovery only reaches hosts on the same L2 segment, so these should be
+    /// the server's local subnets.
+    pub networks: Vec<String>,
+
+    /// Seconds between discovery passes.
+    pub interval: u64,
+
+    /// Milliseconds to wait for an ARP reply from a host before treating it as
+    /// absent.
+    pub arp_timeout_ms: u64,
+
+    /// Milliseconds to wait for a TCP connection to a candidate port.
+    pub connect_timeout_ms: u64,
+
+    /// How many port probes may be in flight at once.
+    pub concurrency: usize,
+}
+
+impl Default for ScanConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            networks: Vec::new(),
+            interval: 15 * 60,
+            arp_timeout_ms: 500,
+            connect_timeout_ms: 750,
+            concurrency: 256,
+        }
+    }
 }
 
 /// A single managed device. One device may expose several protocols (e.g. an IP
@@ -306,6 +353,12 @@ mod tests {
     #[test]
     fn device_config_ron_round_trip() {
         let config = ProbeManagerConfig {
+            scan: ScanConfig {
+                enabled: true,
+                networks: vec!["10.0.0.0/24".into(), "192.168.1.0/24".into()],
+                interval: 600,
+                ..Default::default()
+            },
             devices: vec![
                 DeviceConfig {
                     name: Some("Front door camera".into()),

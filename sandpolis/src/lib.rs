@@ -134,6 +134,13 @@ impl RuntimeOptions {
                 .iter()
                 .flat_map(|realm| realm.probe.devices.iter().cloned())
                 .collect(),
+            // Scanning is a per-server switch, not a merged list; take the first
+            // realm's, like other single-value sections.
+            scan: self
+                .realms
+                .first()
+                .map(|realm| realm.probe.scan.clone())
+                .unwrap_or_default(),
         }
     }
 
