@@ -19,10 +19,6 @@ pub struct NetworkEdge {
     pub to: InstanceId,
 }
 
-// ============================================================================
-// Instance Queries
-// ============================================================================
-
 /// Query all instances from the database
 /// This is the initial query run on startup to spawn all nodes
 ///
@@ -68,10 +64,6 @@ pub fn query_instance_metadata(id: InstanceId) -> Result<InstanceMetadata> {
     })
 }
 
-// ============================================================================
-// Network Queries
-// ============================================================================
-
 /// Query network topology (edges between instances)
 /// Returns list of connections for the current layer
 pub fn query_network_topology(network_manager: &NetworkManager) -> Result<Vec<NetworkEdge>> {
@@ -111,130 +103,6 @@ pub fn query_network_stats(
         throughput_bps: None,
     })
 }
-
-// ============================================================================
-// Filesystem Queries (Phase 3)
-// ============================================================================
-
-/// Filesystem usage statistics
-#[derive(Clone, Debug)]
-pub struct FilesystemUsage {
-    pub total: u64,
-    pub used: u64,
-    pub free: u64,
-}
-
-/// Query filesystem usage for an instance
-pub fn query_filesystem_usage(_id: InstanceId) -> Result<FilesystemUsage> {
-    // TODO: Query from filesystem resident
-    Ok(FilesystemUsage {
-        total: 0,
-        used: 0,
-        free: 0,
-    })
-}
-
-/// File/directory entry
-#[derive(Clone, Debug)]
-pub struct FileEntry {
-    pub name: String,
-    pub is_dir: bool,
-    pub size: u64,
-}
-
-/// Query directory contents
-pub fn query_directory_contents(
-    _id: InstanceId,
-    _path: &std::path::Path,
-) -> Result<Vec<FileEntry>> {
-    // TODO: Query from filesystem resident
-    Ok(vec![])
-}
-
-// ============================================================================
-// Inventory Queries (Phase 3)
-// ============================================================================
-
-/// Hardware information
-#[derive(Clone, Debug)]
-pub struct HardwareInfo {
-    pub cpu_model: Option<String>,
-    pub cpu_cores: Option<u32>,
-    pub memory_total: Option<u64>,
-}
-
-/// Query hardware info for an instance
-pub fn query_hardware_info(_id: InstanceId) -> Result<HardwareInfo> {
-    // TODO: Query from inventory resident
-    Ok(HardwareInfo {
-        cpu_model: None,
-        cpu_cores: None,
-        memory_total: None,
-    })
-}
-
-/// Memory statistics
-#[derive(Clone, Debug)]
-pub struct MemoryStats {
-    pub total: u64,
-    pub used: u64,
-    pub free: u64,
-}
-
-/// Query memory stats for an instance
-pub fn query_memory_stats(_id: InstanceId) -> Result<MemoryStats> {
-    // TODO: Query from inventory resident
-    Ok(MemoryStats {
-        total: 0,
-        used: 0,
-        free: 0,
-    })
-}
-
-// ============================================================================
-// Shell Queries (Phase 4)
-// ============================================================================
-
-/// Shell session information
-#[derive(Clone, Debug)]
-pub struct ShellSession {
-    pub session_id: String,
-    pub active: bool,
-}
-
-/// Query shell sessions for an instance
-pub fn query_shell_sessions(_id: InstanceId) -> Result<Vec<ShellSession>> {
-    // TODO: Query from shell subsystem
-    Ok(vec![])
-}
-
-/// Query output for a specific shell session
-pub fn query_session_output(_session_id: &str) -> Result<String> {
-    // TODO: Query from shell subsystem
-    Ok(String::new())
-}
-
-// ============================================================================
-// Package Queries (Phase 4)
-// ============================================================================
-
-/// Package information
-#[derive(Clone, Debug)]
-pub struct Package {
-    pub name: String,
-    pub version: String,
-    pub installed: bool,
-}
-
-/// Query packages for an instance
-pub fn query_packages(_id: InstanceId) -> Result<Vec<Package>> {
-    // TODO: Query from inventory subsystem
-    Ok(vec![])
-}
-
-// ============================================================================
-// File Transfer Queries (Phase 3)
-// ============================================================================
 
 /// Active file transfer
 #[derive(Clone, Debug)]
