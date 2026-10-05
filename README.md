@@ -94,9 +94,14 @@ all of the above:
 ```
 
 You connect your client to a server, which relays your requests to any agent or
-probe in the estate. In the above example, your client application can do
-`sandpolis shell <Agent>` or `sandpolis shell <SSH Probe>` to get a shell
-session on either the agent or the probe.
+probe in the estate. In the above example, the GUI client's shell layer opens a
+terminal on either the agent or the SSH probe. From a terminal you address an
+agent by its instance id:
+
+```sh
+sandpolis agents list                          # where the ids come from
+sandpolis shell --instance agent-vo4xk2fqrzlm
+```
 
 All connections between instances (clients, servers, agents) are secured with
 strict mTLS. This means you always need a certificate called a _realm
@@ -112,16 +117,26 @@ isolation for different environments.
 
 #### Install from crates.io
 
+One process is exactly one instance, and which instances a binary can be
+started as is decided at build time. The default features turn on every
+_subsystem_ but no instance, so pick at least one:
+
 ```sh
-cargo install sandpolis
+cargo install sandpolis --features client   # or server, or agent
 ```
 
-As an added benefit for this installation method, you can customize exactly what
-features you need. For example, to build with support for remote desktop and
-nothing else:
+Several can go in the same binary, which is what the demo image below does:
 
 ```sh
-cargo install sandpolis --no-default-features --features desktop
+cargo install sandpolis --features server,agent,client
+```
+
+As an added benefit for this installation method, you can also drop the
+subsystems you don't need. For example, a client with support for remote
+desktop and nothing else:
+
+```sh
+cargo install sandpolis --no-default-features --features client,desktop
 ```
 
 As a result, your installation artifacts will be smaller and will be unable to

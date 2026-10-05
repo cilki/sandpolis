@@ -1,7 +1,11 @@
-## `sandpolis-database`
+## `sandpolis-instance`
 
-This subsystem implements the Sandpolis data model which is fundamental to all other
-subsystems. All instances maintain their own database for different reasons:
+This subsystem implements what every instance has regardless of which one it is:
+instance ids, realms, the connections and streams between instances, and the
+data model the other subsystems are built on.
+
+The data model is fundamental to all other subsystems. All instances maintain
+their own database for different reasons:
 
 - The server's database persists data for the entire network for long periods of
   time
@@ -48,12 +52,18 @@ file in its `--data` directory. Nothing creates a realm at runtime.
 
 ### Realm membership
 
-Users can become members of a realm with an associated set of permissions.
+A realm's users are declared in its realm config, along with the permissions
+each one gets, so a user account belongs to exactly one realm and is never
+created any other way. See `sandpolis-server` for the details.
 
 ### Default realm
 
-All users are members of a special realm called _default_. The default realm
-cannot be removed.
+`default` is the realm name used wherever nothing names one: a server whose
+`--data` directory holds no realm config gets a blank `default.realm.ron`
+written for it, and a server started without `--data` serves an implicit
+`default` realm out of its in-memory database. It is otherwise an ordinary
+realm — a server whose directory declares only `work.realm.ron` and
+`home.realm.ron` serves no realm called `default`.
 
 ### Realm authentication
 
@@ -63,27 +73,25 @@ server's address in its common name (`host:port/realm`), so the certificate
 names exactly one server and realm. It is distributed in a realm cert
 (`<realm>.realm.pem`) alongside the realm CA that verifies the server.
 
-There are four types of certificate:
+There are three types of certificate:
 
 #### Realm cluster certificate
 
-Each realm has a single "root" cluster certificate that signs new server,
-client, and agent certificates.
+Each realm has a single "root" cluster certificate that signs every other
+certificate in the realm. Only the global stratum server holds its private key,
+so it is the only instance that can issue — a local stratum server can verify
+peers but never mint a certificate of its own.
 
 #### Realm server certificate
 
-This certificate is used by clients and agents to verify the server is part of
-the cluster.
+A server's listener identity, used by clients and agents to verify the server is
+part of the cluster.
 
-#### Realm client certificate
+#### Realm endpoint certificate
 
-This certificate is used to authenticate with servers as a client instance. The
-server verifies the client certificate was issued by the cluster certificate.
-
-Clients must also login as a user which provides them their permissions.
-
-#### Realm agent certificate
-
-Also a clientAuth certificate, but is distinct from regular realm client
-certificates so that it's impossible to use an agent cert to authenticate as a
-client instance.
+A clientAuth certificate for anything that dials a server: clients, agents, and
+a local stratum server authenticating to its global stratum server all hold the
+same kind. The server verifies it was issued by the cluster certificate and does
+not distinguish a client from an agent by it — what a client is allowed to do
+comes from the user it logs in as (when the realm declares users at all), not
+from the certificate that got it onto the network.

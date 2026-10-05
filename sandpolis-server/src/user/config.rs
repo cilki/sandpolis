@@ -55,7 +55,7 @@ pub struct UserConfig {
     pub expiration: Option<i64>,
 
     /// What the user is allowed to do, layer by layer: for example
-    /// `["shell:session", "filesystem:read"]`. `["shell:*"]` grants a whole
+    /// `["shell:session", "filesystem:session"]`. `["shell:*"]` grants a whole
     /// layer and `["*"]` grants everything.
     #[serde(default)]
     pub permissions: Vec<Permission>,

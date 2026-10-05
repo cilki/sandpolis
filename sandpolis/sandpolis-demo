@@ -22,14 +22,7 @@ shutdown() {
 }
 trap shutdown TERM INT EXIT
 
-# The server's log is captured to a file (the admin password below is only ever
-# written there) and streamed on to the container's stderr by a follower, which
-# keeps $! the server's own pid rather than some pipeline member's.
-log=/tmp/server.log
-: >"$log"
-sandpolis server --data "$data/server" --listen 0.0.0.0:8768 2>>"$log" &
-pids="$pids $!"
-tail -n +1 -f "$log" >&2 &
+sandpolis server --data "$data/server" --listen 0.0.0.0:8768 &
 pids="$pids $!"
 
 # The server mints a realm cert before it starts listening, and the agent and
@@ -46,19 +39,28 @@ if [ ! -s "$realm" ]; then
     exit 1
 fi
 
-# The admin password is generated once and only ever logged, so surface it here
-# instead of making someone go find it.
-credentials="$(grep -m1 'Created default admin user' "$log")"
-password="${credentials##*password=}"
-password="${password%% *}"
-echo "=================================================================="
-if [ -n "$credentials" ]; then
-    echo " Sandpolis demo — log in as admin / $password"
-else
-    echo " Sandpolis demo — reusing $data, whose admin password was printed"
-    echo " the first time this volume was used and is not logged again."
-fi
-echo "=================================================================="
+# User accounts only ever come from the `user` section of a realm config, and
+# the one the server just wrote for itself is blank. A realm with no users is
+# open: the realm certificate is the only credential and the client goes
+# straight to the estate. Say so, because an absent login prompt otherwise
+# looks like something went wrong.
+cat >&2 <<BANNER
+==================================================================
+ Sandpolis demo — this realm declares no users, so nothing logs in.
+ To require a login, put a user in
+ $data/server/default.realm.ron and restart the container:
+
+   (
+     user: (
+       users: [
+         (username: ("admin"), permissions: ["*"]),
+       ],
+     ),
+   )
+
+ The first login under that name sets its password.
+==================================================================
+BANNER
 
 sandpolis agent --data "$data/agent" --realm "$realm" &
 pids="$pids $!"
@@ -111,9 +113,9 @@ cat >&2 <<'BANNER'
 
 Dropping into a shell against the running demo. Try:
 
-  sandpolis server list
-  sandpolis agent list
-  sandpolis agent list --json
+  sandpolis servers list
+  sandpolis agents list
+  sandpolis agents list --json
 
 Leaving the shell stops the demo.
 
