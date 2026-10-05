@@ -384,45 +384,106 @@ where
     }
 }
 
+/// The realm a request is authenticated for.
+///
+/// [`auth_middleware`] derives this from the certificate the connection
+/// presented and inserts it as a request extension. Handlers must take the
+/// realm from here and never from the request itself: a realm certificate
+/// authenticates its holder against exactly one realm, but one server listens
+/// for every realm it serves behind a single client-certificate verifier, so a
+/// realm the *peer* names is a realm the peer chose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthenticatedRealm(pub RealmName);
+
+impl<S> axum::extract::FromRequestParts<S> for AuthenticatedRealm
+where
+    S: Send + Sync,
+{
+    type Rejection = (axum::http::StatusCode, &'static str);
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _: &S,
+    ) -> Result<Self, Self::Rejection> {
+        parts
+            .extensions
+            .get::<AuthenticatedRealm>()
+            .cloned()
+            // Only reachable if a route escaped `auth_middleware`, which would
+            // be an unauthenticated request rather than a bad one.
+            .ok_or((
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "request was not authenticated",
+            ))
+    }
+}
+
+/// Work out which realm a request is authenticated for.
+///
+/// The realm comes from the common name of the certificate the connection
+/// presented, which is the server URL it was minted for and therefore names
+/// exactly one realm.
+///
+/// A peer may also state a realm in the `x-realm` header, and a legitimate one
+/// always states the realm of the very certificate it is connecting with (both
+/// come from the same realm cert). Stating a different one is refused rather
+/// than ignored, so a peer can never operate on a realm its certificate was not
+/// issued by.
+fn authenticated_realm(
+    tls_data: &TlsData,
+    headers: &axum::http::HeaderMap,
+) -> Result<RealmName, &'static str> {
+    let peer_certificates = tls_data
+        .peer_certificates
+        .as_ref()
+        .ok_or("missing client certificate")?;
+
+    // Take first client certificate
+    let cert = X509Certificate::from_der(
+        peer_certificates
+            .first()
+            .ok_or("missing client certificate")?,
+    )
+    .map_err(|_| "invalid client certificate")?
+    .1;
+
+    // Take first common name from certificate
+    let cn = cert
+        .subject()
+        .iter_common_name()
+        .next()
+        .ok_or("missing common name in client certificate")?
+        .as_str()
+        .map_err(|_| "invalid common name in client certificate")?;
+
+    // The common name is the server URL the certificate was minted for, so
+    // the realm comes from its path component.
+    let url = cn
+        .parse::<ServerUrl>()
+        .map_err(|_| "invalid common name in client certificate")?;
+
+    if let Some(stated) = headers.get(RealmName::name()) {
+        let stated = stated
+            .to_str()
+            .ok()
+            .and_then(|stated| stated.parse::<RealmName>().ok())
+            .ok_or("invalid realm header")?;
+
+        if stated != url.realm {
+            return Err("realm header does not match the client certificate");
+        }
+    }
+
+    Ok(url.realm)
+}
+
 pub async fn auth_middleware(
     State(notify_cert_failures): State<bool>,
     Extension(tls_data): Extension<TlsData>,
     mut request: Request,
     next: Next,
 ) -> Result<Response, &'static str> {
-    let realm = (|| {
-        let peer_certificates = tls_data
-            .peer_certificates
-            .ok_or("missing client certificate")?;
-
-        // Take first client certificate
-        let cert = X509Certificate::from_der(
-            peer_certificates
-                .first()
-                .ok_or("missing client certificate")?,
-        )
-        .map_err(|_| "invalid client certificate")?
-        .1;
-
-        // Take first common name from certificate
-        let cn = cert
-            .subject()
-            .iter_common_name()
-            .next()
-            .ok_or("missing common name in client certificate")?
-            .as_str()
-            .map_err(|_| "invalid common name in client certificate")?;
-
-        // The common name is the server URL the certificate was minted for, so
-        // the realm comes from its path component.
-        let url = cn
-            .parse::<ServerUrl>()
-            .map_err(|_| "invalid common name in client certificate")?;
-
-        Ok::<_, &'static str>(url.realm)
-    })();
-
-    let realm = realm.inspect_err(|reason| {
+    let realm = authenticated_realm(&tls_data, request.headers()).inspect_err(|reason| {
         let peer = request
             .extensions()
             .get::<ConnectInfo<std::net::SocketAddr>>()
@@ -448,9 +509,109 @@ pub async fn auth_middleware(
     })?;
 
     // Pass authentication to routes
-    request.extensions_mut().insert(realm);
+    request.extensions_mut().insert(AuthenticatedRealm(realm));
 
     Ok(next.run(request).await)
+}
+
+#[cfg(test)]
+mod test_auth_middleware {
+    use super::*;
+    use axum::http::HeaderMap;
+
+    /// A realm cert as a peer presents it: the endpoint certificate `realm` at
+    /// `url` would hand to a server.
+    fn endpoint(realm: &str) -> Result<TlsData> {
+        let url: ServerUrl = format!("127.0.0.1:8768/{realm}").parse()?;
+        let ca = RealmCert::new_cluster(ClusterId::default(), realm.parse()?)?;
+        Ok(TlsData {
+            peer_certificates: Some(vec![ca.endpoint_cert(&url)?.cert.try_into()?]),
+        })
+    }
+
+    fn header(realm: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(RealmName::name(), realm.parse().unwrap());
+        headers
+    }
+
+    /// The realm is the one the certificate was issued for, whether or not the
+    /// peer bothers to state it.
+    #[test]
+    fn realm_comes_from_the_certificate() -> Result<()> {
+        let tls = endpoint("alpha")?;
+        let expected: RealmName = "alpha".parse()?;
+
+        assert_eq!(
+            authenticated_realm(&tls, &HeaderMap::new()).unwrap(),
+            expected
+        );
+        assert_eq!(
+            authenticated_realm(&tls, &header("alpha")).unwrap(),
+            expected
+        );
+        Ok(())
+    }
+
+    /// Naming a realm other than the certificate's is refused: one server
+    /// listens for every realm it serves behind a single client-certificate
+    /// verifier, so a certificate issued by one realm's CA is accepted on a
+    /// connection to any of them. Were the stated realm taken at face value, it
+    /// would be the whole of what decides which realm's database, users and
+    /// certificate authority the request reaches.
+    #[test]
+    fn stated_realm_cannot_cross_realms() -> Result<()> {
+        let tls = endpoint("alpha")?;
+
+        assert_eq!(
+            authenticated_realm(&tls, &header("default")),
+            Err("realm header does not match the client certificate")
+        );
+        Ok(())
+    }
+
+    /// No certificate, no realm — the handshake is mutually authenticated, so
+    /// this means a route escaped the acceptor rather than a peer opting out.
+    #[test]
+    fn missing_certificate_is_refused() {
+        let tls = TlsData {
+            peer_certificates: None,
+        };
+        assert_eq!(
+            authenticated_realm(&tls, &HeaderMap::new()),
+            Err("missing client certificate")
+        );
+
+        let tls = TlsData {
+            peer_certificates: Some(Vec::new()),
+        };
+        assert_eq!(
+            authenticated_realm(&tls, &HeaderMap::new()),
+            Err("missing client certificate")
+        );
+    }
+
+    /// A server certificate names its realm by SAN and leaves the common name
+    /// at rcgen's placeholder, so it can't stand in for the realm cert that
+    /// authenticates a dialer — least of all with a realm header to make up the
+    /// difference.
+    #[test]
+    fn server_certificate_has_no_realm() -> Result<()> {
+        let ca = RealmCert::new_cluster(ClusterId::default(), "alpha".parse()?)?;
+        let tls = TlsData {
+            peer_certificates: Some(vec![ca.server_cert(ServerId::random())?.cert.try_into()?]),
+        };
+
+        assert_eq!(
+            authenticated_realm(&tls, &HeaderMap::new()),
+            Err("invalid common name in client certificate")
+        );
+        assert_eq!(
+            authenticated_realm(&tls, &header("alpha")),
+            Err("invalid common name in client certificate")
+        );
+        Ok(())
+    }
 }
 
 impl Header for RealmName {
