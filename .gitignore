@@ -4,4 +4,8 @@
 build
 target
 data
-vendor
+# `cargo vendor` output, except the one crate that is checked in on purpose
+# (see vendor/README.md).
+vendor/*
+!vendor/README.md
+!vendor/ironrdp-connector

@@ -7,7 +7,13 @@ version = "0.0.1"
 
 [dependencies]
 anyhow = { workspace = true }
-arp-toolkit = { version = "0.3.2", optional = true, features = ["sync"] }
+# The `sync` feature must stay off: it is `maybe-async/is_sync`, and because
+# that's a feature of a shared *proc-macro* crate it applies to every
+# `#[maybe_async]` user in the graph - including `smb-transport`, whose tokio
+# code only compiles in async mode. Nothing is lost by leaving it off: the async
+# API blocks internally anyway (pnet underneath), which is why `scan::arp_sweep`
+# drives it with `block_on` from inside `spawn_blocking`.
+arp-toolkit = { version = "0.3.2", optional = true }
 bollard = { workspace = true, optional = true }
 clap = { workspace = true, optional = true }
 futures = { workspace = true }

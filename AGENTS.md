@@ -341,8 +341,9 @@ cd android && ./gradlew assembleDebug
   - First cut negotiates TLS security; hosts requiring NLA/CredSSP need
     `enable_credssp` turned on and the sspi CredSSP path exercised
   - `ironrdp-connector` is vendored under `vendor/` with a one-line picky bump
-    and a `buffer_len` fixup so it resolves against the pinned `sspi` rev; drop
-    it once IronRDP releases against picky rc.26
+    (rc.25 to rc.26) so it resolves against the pinned `sspi` rev; every other
+    IronRDP crate comes from crates.io. Drop it once IronRDP releases against
+    picky rc.26
 - RTSP probe (`rtsp/`)
   - Button on expanded node panel to maximize the video stream
   - Driven from the desktop layer?
@@ -356,15 +357,20 @@ cd android && ./gradlew assembleDebug
 - SMB probe (`smb.rs`) — `SmbFs` behind `crate::filesystem`, mirroring `NfsFs`.
   Its dependencies are pinned in two places, both worth understanding before
   touching them:
-  - `smb` comes from a fork rev (`chdalski/fork-smb-rs`) that moves the crate
-    onto `sspi 0.21`, so its crypto stack unifies with `russh`'s. Keep the
-    `kerberos` feature off: it routes NTLM through SPNEGO, which Samba rejects,
-    and the fork's other commit depends on that path being unused.
-  - `[patch.crates-io] sspi` points at an upstream commit ahead of the 0.21.4
-    release. Published 0.21.x pins exact release candidates of
+  - `smb` is `0.12.1` from crates.io, which builds on `sspi 0.21` so its crypto
+    stack unifies with `russh`'s. Keep the `kerberos` feature off: it routes
+    NTLM through SPNEGO, which Samba rejects. Its `sspi` requirement is exact
+    (`=0.21.3`), which is what fixes the patch below.
+  - `[patch.crates-io] sspi` points at the last upstream commit still declaring
+    0.21.3. Published 0.21.3 pins exact release candidates of
     `curve25519-dalek`/`ed25519-dalek`/`p256` that no published `russh` agrees
-    with — cargo cannot resolve both. Those pins are macOS/iOS-only and upstream
-    has dropped them; delete the patch once 0.21.4 is out.
+    with — cargo cannot resolve both. Those pins are macOS/iOS-only and that rev
+    has already moved them to the stable releases; delete the patch once there's
+    a published `sspi` release that `smb` accepts.
+  - `arp-toolkit`'s `sync` feature must stay off. It is `maybe-async/is_sync`,
+    a feature of a shared proc-macro crate, so it switches every
+    `#[maybe_async]` user in the graph — including `smb-transport`, whose tokio
+    code then doesn't compile.
 - Node panels on probes in probe layer just show what protocols are supported -
   to interact with probes, you use a more specific layer like desktop,
   filesystem, etc.

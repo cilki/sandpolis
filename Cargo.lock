@@ -7223,7 +7223,8 @@ dependencies = [
 [[package]]
 name = "ironrdp-async"
 version = "0.10.0"
-source = "git+https://github.com/cilki/IronRDP?rev=ac1ba147783448a6062198cfa492bd9f868bd840#ac1ba147783448a6062198cfa492bd9f868bd840"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bea12d80384007fe321eb6b36c9225be9559c655fd581458a6a1386c1774d729"
 dependencies = [
  "bytes",
  "ironrdp-connector",
@@ -7235,12 +7236,12 @@ dependencies = [
 [[package]]
 name = "ironrdp-bulk"
 version = "0.1.1"
-source = "git+https://github.com/cilki/IronRDP?rev=ac1ba147783448a6062198cfa492bd9f868bd840#ac1ba147783448a6062198cfa492bd9f868bd840"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e548d9fd162558a5a8aaed72e528556ce88e77773634e3722b8d01d6f170388"
 
 [[package]]
 name = "ironrdp-connector"
 version = "0.10.0"
-source = "git+https://github.com/cilki/IronRDP?rev=ac1ba147783448a6062198cfa492bd9f868bd840#ac1ba147783448a6062198cfa492bd9f868bd840"
 dependencies = [
  "ironrdp-core",
  "ironrdp-error",
@@ -7258,7 +7259,8 @@ dependencies = [
 [[package]]
 name = "ironrdp-core"
 version = "0.2.1"
-source = "git+https://github.com/cilki/IronRDP?rev=ac1ba147783448a6062198cfa492bd9f868bd840#ac1ba147783448a6062198cfa492bd9f868bd840"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef0875b98275068b88652e49ba2e0a1150a1390aad69d26c942c8c59e8ec918e"
 dependencies = [
  "ironrdp-error",
 ]
@@ -7266,7 +7268,8 @@ dependencies = [
 [[package]]
 name = "ironrdp-displaycontrol"
 version = "0.8.0"
-source = "git+https://github.com/cilki/IronRDP?rev=ac1ba147783448a6062198cfa492bd9f868bd840#ac1ba147783448a6062198cfa492bd9f868bd840"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74a111a6fd25abbe51b6a15276fe980c6b9eee50a1421224b0c3f45848d45bcf"
 dependencies = [
  "ironrdp-core",
  "ironrdp-dvc",
@@ -7278,7 +7281,8 @@ dependencies = [
 [[package]]
 name = "ironrdp-dvc"
 version = "0.8.0"
-source = "git+https://github.com/cilki/IronRDP?rev=ac1ba147783448a6062198cfa492bd9f868bd840#ac1ba147783448a6062198cfa492bd9f868bd840"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a5de64988ddabf96928e2f042e1772a5f7201f0001ea99012129c73a105fc52"
 dependencies = [
  "ironrdp-core",
  "ironrdp-pdu",
@@ -7289,12 +7293,14 @@ dependencies = [
 [[package]]
 name = "ironrdp-error"
 version = "0.2.0"
-source = "git+https://github.com/cilki/IronRDP?rev=ac1ba147783448a6062198cfa492bd9f868bd840#ac1ba147783448a6062198cfa492bd9f868bd840"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd344ce9518ab83f6f7568ca4f1bc6dc8c55bd2da04cb5ee7b3e8740d5041734"
 
 [[package]]
 name = "ironrdp-graphics"
 version = "0.9.0"
-source = "git+https://github.com/cilki/IronRDP?rev=ac1ba147783448a6062198cfa492bd9f868bd840#ac1ba147783448a6062198cfa492bd9f868bd840"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c7493e426b6a8104cd497e518ba7781a9c7fc9a5f58a9cc0c1111e6d66f63bcc"
 dependencies = [
  "bit_field",
  "bitflags 2.13.1",
@@ -7310,7 +7316,8 @@ dependencies = [
 [[package]]
 name = "ironrdp-input"
 version = "0.7.0"
-source = "git+https://github.com/cilki/IronRDP?rev=ac1ba147783448a6062198cfa492bd9f868bd840#ac1ba147783448a6062198cfa492bd9f868bd840"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b1658a0c1d2911b767b71c2f9e07550d7a267bffaaaaeeec868d1752c8ec0f4"
 dependencies = [
  "bitvec",
  "ironrdp-pdu",
@@ -7320,7 +7327,8 @@ dependencies = [
 [[package]]
 name = "ironrdp-pdu"
 version = "0.9.0"
-source = "git+https://github.com/cilki/IronRDP?rev=ac1ba147783448a6062198cfa492bd9f868bd840#ac1ba147783448a6062198cfa492bd9f868bd840"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ccd1179a4d106df1930347701388b5c79bc3725fa7dab4438d57db0d9d19347"
 dependencies = [
  "bit_field",
  "bitflags 2.13.1",
@@ -7342,7 +7350,8 @@ dependencies = [
 [[package]]
 name = "ironrdp-session"
 version = "0.11.0"
-source = "git+https://github.com/cilki/IronRDP?rev=ac1ba147783448a6062198cfa492bd9f868bd840#ac1ba147783448a6062198cfa492bd9f868bd840"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f1a5a20c24d8ebf47477f9f513201aeb894e7c7f779ea633ece65e42a9f0652"
 dependencies = [
  "ironrdp-bulk",
  "ironrdp-core",
@@ -7358,7 +7367,8 @@ dependencies = [
 [[package]]
 name = "ironrdp-svc"
 version = "0.8.0"
-source = "git+https://github.com/cilki/IronRDP?rev=ac1ba147783448a6062198cfa492bd9f868bd840#ac1ba147783448a6062198cfa492bd9f868bd840"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "24c36b82ab0f7fef2668fb7004008a0f3c100a3d9a7b18bd4495a71aba55b796"
 dependencies = [
  "bitflags 2.13.1",
  "ironrdp-core",
@@ -7368,7 +7378,8 @@ dependencies = [
 [[package]]
 name = "ironrdp-tls"
 version = "0.2.2"
-source = "git+https://github.com/cilki/IronRDP?rev=ac1ba147783448a6062198cfa492bd9f868bd840#ac1ba147783448a6062198cfa492bd9f868bd840"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ea5f0bb732e33159834f06a687f5415dae1a82c71c123c1c3a3689d41ed47645"
 dependencies = [
  "tokio",
  "tokio-rustls",
@@ -7378,7 +7389,8 @@ dependencies = [
 [[package]]
 name = "ironrdp-tokio"
 version = "0.10.0"
-source = "git+https://github.com/cilki/IronRDP?rev=ac1ba147783448a6062198cfa492bd9f868bd840#ac1ba147783448a6062198cfa492bd9f868bd840"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7692ac83a98e4b3ac01405e311bbbd5a33683447032986ed92a4a44d46ad6344"
 dependencies = [
  "ironrdp-async",
  "ironrdp-connector",
@@ -8173,11 +8185,11 @@ dependencies = [
 
 [[package]]
 name = "md4"
-version = "0.11.0"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd76fb0fd6b2e4be62a73f8e0858ca97f81babcb1af322dcaca196f735f17f80"
+checksum = "7da5ac363534dce5fabf69949225e174fbf111a498bf0ff794c8ea1fba9f3dda"
 dependencies = [
- "digest 0.11.3",
+ "digest 0.10.7",
 ]
 
 [[package]]
@@ -13342,8 +13354,9 @@ checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
 
 [[package]]
 name = "smb"
-version = "0.11.2"
-source = "git+https://github.com/chdalski/fork-smb-rs?rev=d1f8ba9ae9bcdb27e75a3f50fcf83b6940e836ff#d1f8ba9ae9bcdb27e75a3f50fcf83b6940e836ff"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b60b8c4d8566c3cf19d17837958e67acc0534e68f331e898a642f4f57e9ecc4c"
 dependencies = [
  "aead",
  "aes 0.9.2",
@@ -13380,8 +13393,9 @@ dependencies = [
 
 [[package]]
 name = "smb-dtyp"
-version = "0.11.2"
-source = "git+https://github.com/chdalski/fork-smb-rs?rev=d1f8ba9ae9bcdb27e75a3f50fcf83b6940e836ff#d1f8ba9ae9bcdb27e75a3f50fcf83b6940e836ff"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92502e77499d69673784f91d85596152bc7ba45dc082825d4953759eae5d5771"
 dependencies = [
  "binrw",
  "modular-bitfield",
@@ -13393,8 +13407,9 @@ dependencies = [
 
 [[package]]
 name = "smb-dtyp-derive"
-version = "0.11.2"
-source = "git+https://github.com/chdalski/fork-smb-rs?rev=d1f8ba9ae9bcdb27e75a3f50fcf83b6940e836ff#d1f8ba9ae9bcdb27e75a3f50fcf83b6940e836ff"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "276beaa2393a73476905239b003bbcc5f4fc3dfd2578e8155fcd50402a46c6e5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -13403,8 +13418,9 @@ dependencies = [
 
 [[package]]
 name = "smb-fscc"
-version = "0.11.2"
-source = "git+https://github.com/chdalski/fork-smb-rs?rev=d1f8ba9ae9bcdb27e75a3f50fcf83b6940e836ff#d1f8ba9ae9bcdb27e75a3f50fcf83b6940e836ff"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c77dc73fc27e86482a11a11df1e4ec90867dc997b4235340e4764a2e2f29d51f"
 dependencies = [
  "binrw",
  "modular-bitfield",
@@ -13416,8 +13432,9 @@ dependencies = [
 
 [[package]]
 name = "smb-msg"
-version = "0.11.2"
-source = "git+https://github.com/chdalski/fork-smb-rs?rev=d1f8ba9ae9bcdb27e75a3f50fcf83b6940e836ff#d1f8ba9ae9bcdb27e75a3f50fcf83b6940e836ff"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aea26464714b7955b2e3ace3fb994dcdd4d3bf725a29dcd72294d6309d16bc52"
 dependencies = [
  "binrw",
  "modular-bitfield",
@@ -13431,8 +13448,9 @@ dependencies = [
 
 [[package]]
 name = "smb-msg-derive"
-version = "0.11.2"
-source = "git+https://github.com/chdalski/fork-smb-rs?rev=d1f8ba9ae9bcdb27e75a3f50fcf83b6940e836ff#d1f8ba9ae9bcdb27e75a3f50fcf83b6940e836ff"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7273e51fa7d3604e06d9b8ac87f76079ca91758457bb85c4b2f624892ac3ff35"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -13441,8 +13459,9 @@ dependencies = [
 
 [[package]]
 name = "smb-rpc"
-version = "0.11.2"
-source = "git+https://github.com/chdalski/fork-smb-rs?rev=d1f8ba9ae9bcdb27e75a3f50fcf83b6940e836ff#d1f8ba9ae9bcdb27e75a3f50fcf83b6940e836ff"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1a98946409c5803cb728189023303c9bc3a2379864f6aed7a36d2b79d3d7607d"
 dependencies = [
  "binrw",
  "maybe-async",
@@ -13455,21 +13474,17 @@ dependencies = [
 
 [[package]]
 name = "smb-transport"
-version = "0.11.2"
-source = "git+https://github.com/chdalski/fork-smb-rs?rev=d1f8ba9ae9bcdb27e75a3f50fcf83b6940e836ff#d1f8ba9ae9bcdb27e75a3f50fcf83b6940e836ff"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8613e6249599435bf3459e2ae17fda8de8d1bfd303d45d92021d5249e95c920c"
 dependencies = [
  "binrw",
  "futures-core",
  "futures-util",
  "log 0.4.33",
  "maybe-async",
- "modular-bitfield",
- "pastey 0.1.1",
- "smb-dtyp",
  "thiserror 2.0.20",
- "time",
  "tokio",
- "tokio-util",
 ]
 
 [[package]]
@@ -13786,8 +13801,8 @@ dependencies = [
 
 [[package]]
 name = "sspi"
-version = "0.21.4"
-source = "git+https://github.com/Devolutions/sspi-rs?rev=a9dfaec9b04ce06a487f6091890f9a1baf620005#a9dfaec9b04ce06a487f6091890f9a1baf620005"
+version = "0.21.3"
+source = "git+https://github.com/Devolutions/sspi-rs?rev=4878c50503b204bba95def66ca7d45e6d396f898#4878c50503b204bba95def66ca7d45e6d396f898"
 dependencies = [
  "async-dnssd",
  "async-recursion",
@@ -16659,7 +16674,7 @@ dependencies = [
 [[package]]
 name = "winscard"
 version = "0.3.3"
-source = "git+https://github.com/Devolutions/sspi-rs?rev=a9dfaec9b04ce06a487f6091890f9a1baf620005#a9dfaec9b04ce06a487f6091890f9a1baf620005"
+source = "git+https://github.com/Devolutions/sspi-rs?rev=4878c50503b204bba95def66ca7d45e6d396f898#4878c50503b204bba95def66ca7d45e6d396f898"
 dependencies = [
  "bitflags 2.13.1",
  "crypto-bigint",

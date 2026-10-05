@@ -261,7 +261,9 @@ fn arp_sweep(
             if host == network || host == broadcast || skip.contains(&host) {
                 continue;
             }
-            if client.ip_to_mac(host, Some(timeout)).is_ok() {
+            // `ip_to_mac` is only nominally async: it waits on pnet's blocking
+            // receive, so there is nothing for an executor to interleave.
+            if futures::executor::block_on(client.ip_to_mac(host, Some(timeout))).is_ok() {
                 live.push(host);
             }
         }
@@ -285,9 +287,13 @@ async fn port_scan(
     concurrency: usize,
     cancel: &CancellationToken,
 ) -> HashMap<Ipv4Addr, Vec<ProbeType>> {
-    let probes = live
+    // Collected rather than left lazy: a borrowing iterator held across the
+    // awaits below makes the whole future fail the `Send` bound `Service::run`
+    // requires.
+    let probes: Vec<(Ipv4Addr, u16, ProbeType)> = live
         .iter()
-        .flat_map(|ip| ports.iter().map(move |(port, protocol)| (*ip, *port, *protocol)));
+        .flat_map(|ip| ports.iter().map(move |(port, protocol)| (*ip, *port, *protocol)))
+        .collect();
 
     let hits = futures::stream::iter(probes)
         .map(|(ip, port, protocol)| async move {
