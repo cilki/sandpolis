@@ -14,6 +14,25 @@ pub mod resident_vec;
 /// Time between TUI redraws (30 fps).
 const REDRAW_PERIOD: Duration = Duration::from_nanos(1_000_000_000 / 30);
 
+/// Refuse to open a TUI when there's no terminal to open it on.
+///
+/// `ratatui::init` panics outright in that case ("failed to initialize
+/// terminal: No such device or address"), which is what a scripted invocation —
+/// a pipe, cron, CI — gets today from subcommands whose default form is a TUI.
+/// Those subcommands take `--json` for exactly this situation, so point at it.
+pub fn require_terminal() -> anyhow::Result<()> {
+    use std::io::IsTerminal;
+
+    if std::io::stdout().is_terminal() && std::io::stdin().is_terminal() {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "this subcommand opens a terminal UI, but stdin/stdout is not a terminal; \
+             pass --json to run noninteractively"
+        )
+    }
+}
+
 /// Run a full-screen TUI driven by a single root widget until the user quits
 /// (`q` or Ctrl-C). Sets up and tears down the terminal. Each client subcommand
 /// builds its own root and calls this.
@@ -21,6 +40,7 @@ pub async fn run_tui<W>(mut root: W) -> anyhow::Result<()>
 where
     W: WidgetRef + EventHandler,
 {
+    require_terminal()?;
     let mut terminal = ratatui::init();
     let mut should_quit = false;
     let mut interval = tokio::time::interval(REDRAW_PERIOD);
@@ -58,6 +78,7 @@ where
     W: WidgetRef + EventHandler,
     F: Fn(&W) -> bool,
 {
+    require_terminal()?;
     let mut terminal = ratatui::init();
     let mut should_quit = false;
     let mut interval = tokio::time::interval(REDRAW_PERIOD);
@@ -126,6 +147,9 @@ where
     W: WidgetRef + EventHandler,
 {
     color_eyre::install()?;
+    if let Err(e) = require_terminal() {
+        return Err(color_eyre::eyre::eyre!("{e}"));
+    }
     let mut terminal = ratatui::init();
 
     let mut should_quit = false;
