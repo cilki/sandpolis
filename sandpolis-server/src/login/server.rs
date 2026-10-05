@@ -4,9 +4,9 @@ use crate::user::server::Claims;
 use aws_lc_rs::pbkdf2;
 use axum::Json;
 use axum::extract::{self, ConnectInfo, State};
-use axum_extra::TypedHeader;
 use sandpolis_instance::network::RequestResult;
 use sandpolis_instance::realm::RealmName;
+use sandpolis_instance::realm::server::AuthenticatedRealm;
 use std::net::SocketAddr;
 use std::time::SystemTime;
 use totp_rs::Totp;
@@ -16,7 +16,7 @@ use validator::Validate;
 #[axum_macros::debug_handler]
 pub async fn post_login(
     state: State<UserManager>,
-    TypedHeader(realm): TypedHeader<RealmName>,
+    AuthenticatedRealm(realm): AuthenticatedRealm,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     extract::Json(request): extract::Json<LoginRequest>,
 ) -> RequestResult<LoginResponse> {

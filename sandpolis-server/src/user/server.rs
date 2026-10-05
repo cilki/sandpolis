@@ -17,6 +17,7 @@ use sandpolis_instance::database::DataScope;
 use sandpolis_instance::network::ConnectionData;
 use sandpolis_instance::network::InstanceConnection;
 use sandpolis_instance::realm::RealmName;
+use sandpolis_instance::realm::server::AuthenticatedRealm;
 use sandpolis_macros::data;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
@@ -379,12 +380,13 @@ impl FromRequestParts<UserManager> for Claims {
             .await
             .map_err(|_| StatusCode::BAD_REQUEST)?;
 
-        // TODO if we can get this from parts.extentions provided by `auth_middleware`,
-        // then we won't need to send the header at all.
-        let TypedHeader(realm) = parts
-            .extract::<TypedHeader<RealmName>>()
+        // The realm is the connection's, not the request's: a token is only
+        // ever valid in the realm whose certificate authenticated the peer
+        // presenting it, and that realm's key is what verifies it.
+        let AuthenticatedRealm(realm) = parts
+            .extract::<AuthenticatedRealm>()
             .await
-            .map_err(|_| StatusCode::BAD_REQUEST)?;
+            .map_err(|(status, _)| status)?;
 
         let token_data = decode::<Claims>(
             bearer.token(),
@@ -399,8 +401,10 @@ impl FromRequestParts<UserManager> for Claims {
 
 /// Accept a websocket from a client, agent, or local stratum server.
 ///
-/// Authentication is by realm cert (the `x-realm` header is validated upstream by
-/// `auth_middleware`). The peer reports its own `InstanceId` via `x-instance-id`
+/// Authentication is by realm cert, and the realm this connection lands in is
+/// the one that certificate names (resolved upstream by `auth_middleware`) —
+/// never one the peer asks for, since that realm decides which database it gets
+/// to serve and subscribe to. The peer reports its own `InstanceId` via `x-instance-id`
 /// so the server can tell agents (whose own data it pulls, directly or through
 /// the ownership machinery) from clients (which subscribe to subsets). The
 /// resulting connection is retained in `network.inbound`; dropping it would
@@ -413,7 +417,7 @@ impl FromRequestParts<UserManager> for Claims {
 #[axum_macros::debug_handler]
 pub async fn connect(
     State(state): State<UserManager>,
-    TypedHeader(realm): TypedHeader<RealmName>,
+    AuthenticatedRealm(realm): AuthenticatedRealm,
     ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
     headers: axum::http::HeaderMap,
     ws: WebSocketUpgrade,

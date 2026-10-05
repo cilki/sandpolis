@@ -5,14 +5,12 @@ use crate::ServerManager;
 use crate::user::UserManager;
 #[cfg(feature = "server")]
 use axum::{Json, extract, extract::State};
-#[cfg(feature = "server")]
-use axum_extra::TypedHeader;
 use native_db::ToKey;
 use native_model::Model;
 #[cfg(feature = "server")]
 use sandpolis_instance::network::RequestResult;
 #[cfg(feature = "server")]
-use sandpolis_instance::realm::RealmName;
+use sandpolis_instance::realm::server::AuthenticatedRealm;
 use sandpolis_macros::data;
 use serde::Deserialize;
 use serde::Serialize;
@@ -37,7 +35,7 @@ pub struct GetBannerResponse(pub ServerBanner);
 pub async fn get_banner(
     state: State<ServerManager>,
     users: State<UserManager>,
-    TypedHeader(realm): TypedHeader<RealmName>,
+    AuthenticatedRealm(realm): AuthenticatedRealm,
     extract::Json(request): extract::Json<GetBannerRequest>,
 ) -> RequestResult<GetBannerResponse> {
     let mut banner = state.banner.read().inner.clone();

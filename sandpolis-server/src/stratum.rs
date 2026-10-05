@@ -23,6 +23,7 @@ use sandpolis_instance::network::reachability::ReachabilityRequest;
 use sandpolis_instance::network::stream::StreamMessage;
 use sandpolis_instance::network::{InstanceConnection, NetworkManager, RetryWait};
 use sandpolis_instance::realm::RealmName;
+use sandpolis_instance::realm::server::AuthenticatedRealm;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use tokio::sync::Notify;
@@ -72,27 +73,41 @@ pub enum IssueServerCertResponse {
     },
     /// Only the global stratum server holds the CA.
     NotGlobalStratum,
-    /// The requested id isn't a server, or the realm doesn't exist here.
+    /// The requested id isn't a server, the realm doesn't exist here, or it
+    /// isn't the realm the caller's certificate authenticates it for.
     Rejected,
 }
 
 /// Issue a server certificate to a local stratum server (global stratum only).
 ///
 /// The caller has already been authenticated by `auth_middleware` against the
-/// realm's CA, so it holds a valid realm certificate for this network.
+/// realm's CA, so it holds a valid realm certificate for this network, and the
+/// realm it holds one *for* is the only realm it can be issued from: a
+/// certificate is signed by that realm's CA, which is the trust root of
+/// everything in it.
 ///
 /// TODO: this currently issues to any authenticated realm-certificate holder,
-/// which is every agent on the network. Issuance is meant to be gated on an
+/// which is every agent in the realm. Issuance is meant to be gated on an
 /// operator approving the request in the GUI — the certificate itself can't
 /// carry that entitlement, since clients and agents hold the same kind.
 pub async fn issue_server_cert(
     axum::extract::State(server): axum::extract::State<ServerManager>,
+    AuthenticatedRealm(realm): AuthenticatedRealm,
     axum::extract::Json(request): axum::extract::Json<IssueServerCertRequest>,
 ) -> axum::Json<IssueServerCertResponse> {
     use sandpolis_instance::realm::{RealmCert, RealmCertType};
 
     if server.stratum.is_local() {
         return axum::Json(IssueServerCertResponse::NotGlobalStratum);
+    }
+
+    if request.realm != realm {
+        warn!(
+            requested = %request.realm,
+            authenticated = %realm,
+            "Refusing to issue a server certificate for another realm"
+        );
+        return axum::Json(IssueServerCertResponse::Rejected);
     }
 
     let instance_id = request.instance_id;
