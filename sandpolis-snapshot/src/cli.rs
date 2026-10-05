@@ -95,6 +95,11 @@ pub async fn dispatch(action: Option<SnapshotCommand>, target: TargetArgs) -> Re
             )
             .await
         }
+        // No subcommand: list noninteractively under `--json`, otherwise open a
+        // placeholder browser. Without the `--json` arm the placeholder's TUI
+        // would refuse to open and tell a scripted caller to pass the flag it
+        // just passed.
+        None if target.json => list(target, None).await,
         None => {
             sandpolis_client::tui::run_tui(sandpolis_client::tui::PlaceholderPanel::new(
                 "snapshot browser (pass a subcommand, e.g. `snapshot list`)",

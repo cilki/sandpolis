@@ -32,6 +32,13 @@ pub async fn dispatch(
         Some(DesktopCommand::Screenshot { desktop, output }) => {
             screenshot(target, desktop, output).await
         }
+        // The viewer is interactive by nature, so there's nothing to show a
+        // scripted caller. Say that, rather than letting the TUI refuse to open
+        // and advise passing the `--json` that's already here.
+        None if target.json => {
+            println!("{{\"status\":\"unimplemented\",\"command\":\"desktop\"}}");
+            Ok(ExitCode::FAILURE)
+        }
         None => {
             // With --instance, open the live terminal viewer pointed at that
             // agent; without one, show a placeholder (the agent picker isn't
