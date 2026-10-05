@@ -13,6 +13,13 @@ pub async fn start(command: crate::cli::Commands) -> anyhow::Result<std::process
     let args = command.client_args().cloned().unwrap_or_default();
     let options = args.options();
 
+    // Nothing below can succeed without a window to draw in, so find that out
+    // before loading certs or dialing a server — the GUI is the one command
+    // whose whole purpose is the window.
+    if let crate::cli::Commands::Client { .. } = command {
+        sandpolis_client::gui::require_display()?;
+    }
+
     // Clients read no config file, so a realm cert is the only way to point one
     // at a server without going through the GUI login dialog. Naming one
     // outright wins; otherwise every cert in the data directory attaches, which
