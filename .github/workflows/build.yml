@@ -20,7 +20,7 @@ jobs:
     steps:
       - run: sudo apt-get update && sudo apt-get install -y libwayland-dev libasound2-dev libudev-dev libfuse3-dev
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-tags: true
 
@@ -60,7 +60,7 @@ jobs:
     steps:
       - run: sudo apt-get install -y libasound2-dev libudev-dev libfuse3-dev llvm
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-tags: true
 
@@ -102,7 +102,7 @@ jobs:
           - client
           - demo
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-tags: true
 
