@@ -11,7 +11,9 @@ use tracing::info;
 use sandpolis_client::cli::TargetArgs;
 
 #[derive(Parser, Debug, Clone)]
-#[clap(author, version, about = "Test")]
+// `about` with no value is the crate description, so the help text and the
+// package metadata can't drift apart.
+#[clap(author, version, about)]
 pub struct CommandLine {
     #[clap(flatten)]
     pub instance: sandpolis_instance::cli::InstanceCommandLine,
@@ -293,7 +295,7 @@ pub enum ServersCommand {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum Commands {
-    /// Show versions of all installed layers
+    /// Show the layers compiled into this build, and their versions
     About,
 
     /// Run the configuration LSP
@@ -564,12 +566,35 @@ impl Commands {
                 if let Some(emblem) = cilki::terminal::banner(&cilki::emblem::SANDPOLIS, 56, 7) {
                     print!("{emblem}");
                 }
-                println!("{} {}", "Layer".bold(), "Version".bold());
-                for (layer, version) in crate::layers().iter() {
-                    println!(
-                        "{layer} {}.{}.{}",
-                        version.major, version.minor, version.patch
-                    );
+                println!(
+                    "{} {}\n",
+                    env!("CARGO_PKG_NAME").bold(),
+                    env!("CARGO_PKG_VERSION")
+                );
+
+                let layers = crate::layers();
+                let width = layers
+                    .iter()
+                    .map(|layer| layer.name.len())
+                    .chain(std::iter::once("Layer".len()))
+                    .max()
+                    .unwrap_or_default();
+
+                // Padded before it's bolded: the escape codes count toward a
+                // format width, so bolding each cell first would skew them.
+                println!(
+                    "{}",
+                    format!("{:width$}  {:7}  {}", "Layer", "Version", "Description").bold()
+                );
+                for layer in layers {
+                    // An unparseable version is the registration's problem, not
+                    // the user's; show what it says rather than failing the
+                    // whole command.
+                    let version = match layer.version() {
+                        Ok(version) => version.to_string(),
+                        Err(_) => layer.version.to_string(),
+                    };
+                    println!("{:width$}  {version:7}  {}", layer.name, layer.description);
                 }
             }
             #[allow(unreachable_patterns)]

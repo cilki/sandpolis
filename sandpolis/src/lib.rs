@@ -1,8 +1,7 @@
 use anyhow::Result;
-use sandpolis_instance::LayerVersion;
+use sandpolis_instance::LayerRegistration;
 use sandpolis_instance::database::DatabaseManager;
 use sandpolis_instance::realm::RealmManager;
-use std::collections::HashMap;
 
 #[cfg(all(feature = "uki", any(feature = "server", feature = "client")))]
 compile_error!(
@@ -394,14 +393,62 @@ impl InstanceState {
     }
 }
 
-// TODO inventory crate
-pub fn layers() -> HashMap<sandpolis_instance::LayerName, LayerVersion> {
-    HashMap::from([])
+/// Every layer linked into this build, sorted by name.
+///
+/// A layer is here because its subsystem crate is in the binary, which for the
+/// optional subsystems means its cargo feature was enabled. That makes this the
+/// answer to "what can this binary do", which varies from build to build —
+/// hence `sandpolis about`.
+pub fn layers() -> Vec<&'static LayerRegistration> {
+    let mut layers: Vec<&'static LayerRegistration> = LayerRegistration::registered().collect();
+    layers.sort_by_key(|layer| layer.name);
+    layers
 }
 
 /// Every model linked into this build, collected from the `#[data]` macro's
 /// registrations. Re-exported here because this is where callers expect it.
 pub use sandpolis_instance::database::MODELS;
+
+#[cfg(test)]
+mod test_layers {
+    /// The core subsystems are compiled into every build, so they're here
+    /// whatever features the test binary was built with. Anything else depends
+    /// on the feature set, which is why this doesn't assert the whole list.
+    #[test]
+    fn core_layers_are_registered() {
+        let names: Vec<&str> = super::layers().iter().map(|layer| layer.name).collect();
+        for expected in ["Agent", "Instance", "Server"] {
+            assert!(names.contains(&expected), "{expected} is missing from {names:?}");
+        }
+    }
+
+    /// One layer per subsystem: a duplicate means two crates claimed the same
+    /// name, which would show up twice in `sandpolis about`.
+    #[test]
+    fn layer_names_are_unique_and_sorted() {
+        let names: Vec<&str> = super::layers().iter().map(|layer| layer.name).collect();
+        let mut unique = names.clone();
+        unique.dedup();
+        assert_eq!(names, unique, "duplicate layer registration");
+
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted);
+    }
+
+    /// Every registration carries a version cargo wrote, so nothing falls back
+    /// to printing an unparseable string.
+    #[test]
+    fn every_version_parses() {
+        for layer in super::layers() {
+            let version = layer
+                .version()
+                .unwrap_or_else(|e| panic!("{}: {e}", layer.name));
+            assert_eq!(version.to_string(), layer.version);
+            assert!(!layer.description.is_empty(), "{}", layer.name);
+        }
+    }
+}
 
 #[cfg(all(test, feature = "server", not(target_os = "android")))]
 mod test_realm_certs_dir {

@@ -27,6 +27,8 @@ pub mod favicon;
 pub mod management;
 pub mod scrape;
 
+sandpolis_instance::register_layer!("Account", "Online accounts and their relationships");
+
 use config::AccountConfig;
 
 static ACCOUNT_PERSIST: ConfigPersistHook<AccountConfig> = ConfigPersistHook::new("account");

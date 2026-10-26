@@ -13,6 +13,8 @@ pub mod deploy;
 pub mod uefi;
 pub mod wake;
 
+sandpolis_instance::register_layer!("Agent", "Managed instances running the agent");
+
 /// The agent's "polling" connection mode, set by `--poll` and `--poll-timeout`.
 ///
 /// A polling agent stays disconnected between check-ins instead of holding a

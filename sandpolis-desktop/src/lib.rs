@@ -21,6 +21,8 @@ pub mod client;
 #[cfg(all(feature = "client", not(target_os = "android")))]
 pub mod cli;
 
+sandpolis_instance::register_layer!("Desktop", "Remote desktop viewing and control");
+
 #[cfg(feature = "agent")]
 mod agent;
 

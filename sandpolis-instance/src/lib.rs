@@ -316,9 +316,9 @@ impl LayerName {
         &self.0
     }
 
-    /// Iterate over all registered layers.
-    pub fn registered() -> impl Iterator<Item = &'static LayerName> {
-        inventory::iter::<LayerName>()
+    /// Iterate over the layers linked into this build, in registration order.
+    pub fn registered() -> impl Iterator<Item = LayerName> {
+        LayerRegistration::registered().map(|layer| LayerName::from(layer.name))
     }
 }
 
@@ -360,8 +360,63 @@ impl PartialEq<&str> for LayerName {
     }
 }
 
-// Register LayerName with inventory for runtime collection
-inventory::collect!(LayerName);
+/// What a subsystem says about the layer it provides, collected at link time so
+/// any build can report the layers it actually carries.
+///
+/// A subsystem provides at most one layer, so a crate submits at most one of
+/// these — from its `lib.rs`, next to the code it describes. An optional
+/// subsystem needs no `cfg`, since its crate is only compiled when its feature
+/// is on; a crate that is compiled either way has to gate its own registration.
+/// The one layer with no subsystem behind it is `Network`, which the client
+/// draws from what every other layer already knows.
+///
+/// Everything here is `&'static str` because `inventory::submit!` builds a
+/// static: the obvious `LayerName` registration is impossible to write, since
+/// its `String` can't be constructed in a const.
+pub struct LayerRegistration {
+    /// The layer's name, which is also its subsystem's name (e.g. `"Shell"`).
+    pub name: &'static str,
+
+    /// The subsystem crate's version, i.e. its `CARGO_PKG_VERSION`.
+    pub version: &'static str,
+
+    /// One line explaining what the layer is for.
+    pub description: &'static str,
+}
+
+inventory::collect!(LayerRegistration);
+
+impl LayerRegistration {
+    /// Every layer linked into this build, in registration order (which is
+    /// arbitrary — callers that show these to a person should sort them).
+    pub fn registered() -> impl Iterator<Item = &'static LayerRegistration> {
+        inventory::iter::<LayerRegistration>()
+    }
+
+    /// The subsystem's version, parsed. Cargo guarantees the shape, so this
+    /// only fails if a registration was hand-written with something else.
+    pub fn version(&self) -> Result<LayerVersion> {
+        LayerVersion::try_from(self.version.to_string())
+    }
+}
+
+/// Register the layer this subsystem provides. Expands to an
+/// [`inventory::submit!`] of a [`LayerRegistration`] carrying the calling
+/// crate's version.
+#[macro_export]
+macro_rules! register_layer {
+    ($name:literal, $description:literal) => {
+        $crate::inventory::submit! {
+            $crate::LayerRegistration {
+                name: $name,
+                version: env!("CARGO_PKG_VERSION"),
+                description: $description,
+            }
+        }
+    };
+}
+
+register_layer!("Instance", "Instance identity, connections and domains");
 
 #[data(defaults)]
 pub struct InstanceManagerData {
@@ -569,6 +624,18 @@ impl TryFrom<String> for LayerVersion {
             patch,
             description,
         })
+    }
+}
+
+impl Display for LayerVersion {
+    /// The inverse of [`LayerVersion::try_from`], so a version read from a
+    /// registration prints exactly as cargo wrote it.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)?;
+        if let Some(description) = self.description.as_deref() {
+            write!(f, "-{description}")?;
+        }
+        Ok(())
     }
 }
 

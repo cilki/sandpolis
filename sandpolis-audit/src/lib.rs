@@ -21,6 +21,8 @@ pub mod rules;
 #[cfg(feature = "agent")]
 pub mod agent;
 
+sandpolis_instance::register_layer!("Audit", "Host activity auditing and detection rules");
+
 #[data]
 #[derive(Default)]
 pub struct AuditManagerData {

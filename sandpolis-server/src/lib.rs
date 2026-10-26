@@ -45,6 +45,8 @@ pub mod ownership;
 pub mod stratum;
 pub mod user;
 
+sandpolis_instance::register_layer!("Server", "Server instances in the cluster");
+
 #[data]
 #[derive(Default)]
 pub struct ServerManagerData {}

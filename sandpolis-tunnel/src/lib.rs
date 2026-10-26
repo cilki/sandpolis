@@ -48,6 +48,8 @@ pub mod client;
 #[cfg(all(feature = "client", not(target_os = "android")))]
 pub mod cli;
 
+sandpolis_instance::register_layer!("Tunnel", "Application-level tunnels");
+
 /// Which transport a tunnel forwards.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum TunnelProtocol {

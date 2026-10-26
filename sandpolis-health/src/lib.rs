@@ -15,6 +15,8 @@ pub mod client;
 
 pub mod systemd;
 
+sandpolis_instance::register_layer!("Health", "Service and host health");
+
 #[data]
 #[derive(Default)]
 pub struct HealthManagerData {}

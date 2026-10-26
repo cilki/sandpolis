@@ -5,6 +5,8 @@ pub mod client;
 
 pub mod session;
 
+sandpolis_instance::register_layer!("Filesystem", "Browse and manage remote filesystems");
+
 #[derive(Clone)]
 pub struct FilesystemManager {}
 

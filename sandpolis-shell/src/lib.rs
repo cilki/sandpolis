@@ -24,6 +24,8 @@ pub mod shell;
 #[cfg(feature = "probe")]
 pub mod ssh;
 
+sandpolis_instance::register_layer!("Shell", "Remote shell access and command execution");
+
 #[derive(Clone)]
 pub struct ShellManager {
     database: DatabaseManager,

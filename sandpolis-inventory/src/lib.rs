@@ -17,6 +17,9 @@ pub mod cve;
 pub mod hardware;
 pub mod os;
 pub mod package;
+
+sandpolis_instance::register_layer!("Inventory", "Hardware and software inventory");
+
 #[cfg(feature = "agent")]
 pub(crate) mod sysfs;
 // Version comparison serves the package collector, the server's CVE matching,

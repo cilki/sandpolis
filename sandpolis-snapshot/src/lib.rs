@@ -46,6 +46,8 @@ pub mod client;
 #[cfg(all(feature = "client", not(target_os = "android")))]
 pub mod cli;
 
+sandpolis_instance::register_layer!("Snapshot", "Cold partition snapshots");
+
 /// Size of the transfer unit in bytes. Recorded per snapshot so the value can
 /// change without invalidating existing chains.
 pub const SNAPSHOT_BLOCK_SIZE: u64 = 1 << 20;

@@ -40,6 +40,8 @@ pub mod cli;
 #[cfg(feature = "client")]
 pub mod client;
 
+sandpolis_instance::register_layer!("Probe", "Device monitoring probes");
+
 /// Devices registered on this instance (populated from config at startup, kept
 /// in sync over the management stream).
 ///
