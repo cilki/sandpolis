@@ -676,6 +676,24 @@ where
     /// will be kept until the expiration date. Otherwise, only the latest
     /// revision is kept.
     fn expiration(&self) -> Option<DataExpiration>;
+
+    /// The `_expiration` secondary index.
+    ///
+    /// Only temporal models carry the field, so this only names a real index
+    /// when [`expiration`](Self::expiration) returns `Some`; querying it on a
+    /// non-temporal model is an error from `native_db`.
+    fn expiration_key() -> KeyDefinition<KeyOptions> {
+        KeyDefinition::new(
+            Self::native_model_id(),
+            Self::native_model_version(),
+            "_expiration",
+            <DataExpiration>::key_names(),
+            KeyOptions {
+                unique: false,
+                optional: false,
+            },
+        )
+    }
 }
 
 // TODO Eq based only on inner?
@@ -846,6 +864,11 @@ impl DataExpiration {
     pub fn expired(&self) -> bool {
         self.0 < Utc::now()
     }
+
+    /// The present instant, as the exclusive upper bound of "already expired".
+    fn now() -> Self {
+        Self(Utc::now())
+    }
 }
 
 impl Default for DataExpiration {
@@ -866,7 +889,7 @@ impl ToKey for DataExpiration {
 
 /// When some `Data` was first added to the database. Modification times are not
 /// tracked for individual `Data` because revisions handle that.
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Copy, Clone)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone)]
 pub struct DataCreation(DateTime<Utc>);
 
 impl DataCreation {
@@ -1046,22 +1069,24 @@ impl<T: Data> Resident<T> {
             rw.upsert(previous.clone())?;
 
             // Retire this chain's expired revisions while we're here, so
-            // temporal rows don't accumulate forever. The range covers every
-            // id sharing this record's revision id.
+            // temporal rows don't accumulate forever.
+            //
+            // The `_expiration` index is ordered by timestamp, so everything
+            // already expired is a prefix of it — usually an empty one. Asking
+            // for that prefix costs what it finds; walking this record's id
+            // range instead would deserialize the entire revision chain on
+            // every single update, making a chain of n revisions cost O(n²) to
+            // build.
+            let revision_id = previous.id().revision_id();
             let expired: Vec<T> = rw
                 .scan()
-                .primary()?
-                .range(
-                    DataIdentifier((previous.id().revision_id() as u64) << 32)
-                        ..=DataIdentifier(
-                            ((previous.id().revision_id() as u64) << 32) | 0xFFFF_FFFF,
-                        ),
-                )?
+                .secondary(T::expiration_key())?
+                .range(..DataExpiration::now())?
                 .collect::<Result<Vec<_>, _>>()?
                 .into_iter()
                 .filter(|item: &T| {
-                    matches!(item.revision(), DataRevision::Previous(_))
-                        && item.expiration().is_some_and(|e| e.expired())
+                    item.id().revision_id() == revision_id
+                        && matches!(item.revision(), DataRevision::Previous(_))
                 })
                 .collect();
             for item in expired {
@@ -1082,19 +1107,27 @@ impl<T: Data> Resident<T> {
 
         let r = self.db.r_transaction()?;
 
-        // TODO .and_secondary instead of fully deserializing
-        let items: Vec<T> = r
+        // Every revision of this record shares the upper half of its id, so the
+        // primary index already isolates the chain. Going through `_creation`
+        // instead would deserialize every record of this type in the realm —
+        // all the other instances' chains included — only to throw them away.
+        let mut items: Vec<T> = r
             .scan()
-            .secondary(T::creation_key())?
-            .range(range)?
+            .primary()?
+            .range(
+                DataIdentifier((revision_id as u64) << 32)
+                    ..=DataIdentifier(((revision_id as u64) << 32) | 0xFFFF_FFFF),
+            )?
             .collect::<Result<Vec<_>, _>>()?;
 
         trace!("{} items", items.len());
 
-        Ok(items
-            .into_iter()
-            .filter(|item| item.id().revision_id() == revision_id)
-            .collect())
+        items.retain(|item| range.contains(&item.creation()));
+        // Primary ids within a chain are random, so order by when each revision
+        // was written — which is what a caller asking for history wants.
+        items.sort_unstable_by_key(|item| item.creation());
+
+        Ok(items)
     }
 }
 
@@ -2261,6 +2294,67 @@ mod test_resident_vec {
         let values: Vec<String> = history.iter().map(|d| d.b.clone()).collect();
         assert!(values.contains(&"version_1".to_string()));
         assert!(values.contains(&"version_5".to_string()));
+
+        Ok(())
+    }
+
+    /// History belongs to one record: revisions of every other record of the
+    /// same type, however many there are, must not leak into it. And since
+    /// every revision is stamped, it comes back in the order it happened.
+    #[tokio::test]
+    #[test_log::test]
+    async fn test_history_isolates_its_own_chain() -> Result<()> {
+        use super::test_resident::{TestHistoryData, TestHistoryDataKey};
+
+        let database = test_db!(TestHistoryData);
+        let db = database.realm(RealmName::default())?;
+
+        let named = |name: &str| -> Result<Resident<TestHistoryData>> {
+            let name = name.to_string();
+            db.resident_with(
+                DataCondition::equal(TestHistoryDataKey::a, name.clone()),
+                || TestHistoryData {
+                    a: name.clone(),
+                    ..Default::default()
+                },
+            )
+        };
+
+        let subject = named("subject")?;
+        let other = named("other")?;
+
+        // Interleave the writes so creation order alone can't separate them.
+        for i in 1..=3 {
+            sleep(Duration::from_millis(5)).await;
+            subject.update(|data| {
+                data.b = format!("subject_{i}");
+                Ok(())
+            })?;
+            sleep(Duration::from_millis(5)).await;
+            other.update(|data| {
+                data.b = format!("other_{i}");
+                Ok(())
+            })?;
+        }
+
+        let history = subject.history(DataCreation::all())?;
+        assert_eq!(history.len(), 4, "initial revision plus three updates");
+        assert!(
+            history.iter().all(|d| d.a == "subject"),
+            "another record's revisions leaked into this history: {history:?}"
+        );
+        assert!(
+            history
+                .windows(2)
+                .all(|pair| pair[0].creation() <= pair[1].creation()),
+            "history must be ordered by when each revision was written"
+        );
+        assert_eq!(history.last().unwrap().b, "subject_3");
+
+        // Narrowing the range drops the revisions outside it.
+        let since = history[2].creation();
+        let recent = subject.history(since..)?;
+        assert_eq!(recent.len(), 2);
 
         Ok(())
     }

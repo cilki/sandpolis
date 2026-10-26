@@ -376,6 +376,73 @@ fn bench_temporal_data(c: &mut Criterion) {
     group.finish();
 }
 
+/// Benchmark: Reading one record's history out of a realm holding many
+/// independent temporal records of the same type.
+fn bench_temporal_history(c: &mut Criterion) {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let mut group = c.benchmark_group("temporal_history");
+
+    for other_records in [10, 100, 500].iter() {
+        group.bench_with_input(
+            BenchmarkId::from_parameter(other_records),
+            other_records,
+            |b, &other_records| {
+                // `history` is read-only, so the fixture is built once and the
+                // measured loop is the lookup alone.
+                let (_database, resident) = runtime.block_on(async move {
+                    let database = create_test_db();
+                    let db = database.realm(RealmName::default()).unwrap();
+
+                    // The record we'll ask about, with a history of its own.
+                    let resident: Resident<BenchTemporalData> = db
+                        .resident_with(
+                            DataCondition::equal(BenchTemporalDataKey::name, "subject".to_string()),
+                            || BenchTemporalData {
+                                name: "subject".to_string(),
+                                ..Default::default()
+                            },
+                        )
+                        .unwrap();
+                    for i in 0..10 {
+                        resident
+                            .update(|data| {
+                                data.value = i;
+                                Ok(())
+                            })
+                            .unwrap();
+                    }
+
+                    // ...surrounded by unrelated records of the same type, each
+                    // carrying a revision chain of its own.
+                    for i in 0..other_records {
+                        let name = format!("other_{i}");
+                        let other: Resident<BenchTemporalData> = db
+                            .resident_with(
+                                DataCondition::equal(BenchTemporalDataKey::name, name.clone()),
+                                || BenchTemporalData {
+                                    name: name.clone(),
+                                    ..Default::default()
+                                },
+                            )
+                            .unwrap();
+                        other
+                            .update(|data| {
+                                data.value = 1;
+                                Ok(())
+                            })
+                            .unwrap();
+                    }
+
+                    (database, resident)
+                });
+
+                b.iter(|| black_box(resident.history(DataCreation::all()).unwrap()));
+            },
+        );
+    }
+    group.finish();
+}
+
 /// Benchmark: Data size impact on operations
 fn bench_data_size_impact(c: &mut Criterion) {
     let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -481,6 +548,7 @@ criterion_group!(
     bench_query_operations,
     bench_listener_overhead,
     bench_temporal_data,
+    bench_temporal_history,
     bench_data_size_impact,
     bench_transaction_throughput,
     bench_watcher_latency,
