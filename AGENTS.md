@@ -408,6 +408,18 @@ cd android && ./gradlew assembleDebug
 - Improve the GUI for viewing instance databases
 - Assign an instance's domain from the GUI
 
+## `sandpolis-server`
+
+- Geolocation (`location/`) resolves where an attached instance is from the
+  address it connected from, when a realm config's `server.location` asks for
+  it. Remaining work:
+  - Show it: nothing reads `LocationData` yet, so it's only visible in the
+    database browser. The node panel is where an operator would expect it, next
+    to the connection's address.
+  - Only the global stratum server geolocates, because it is the only one that
+    reads realm configs; an LS's instances stay unlocated.
+  - Draw the world view's terrain from it when nodes have coordinates?
+
 ## `sandpolis-shell`
 
 - SSH probes open a terminal here like agents (`ssh.rs`, `probe` feature).

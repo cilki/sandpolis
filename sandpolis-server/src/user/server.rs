@@ -557,6 +557,10 @@ pub async fn connect(
     let mut response = ws.on_upgrade(move |socket| async move {
         let mut cd = ConnectionData::scoped(local_instance);
         cd.remote_instance = remote_instance;
+        // Where the peer actually is, as opposed to the instance id it reports.
+        // The connection is the only place this is known, and it is what the
+        // location subsystem resolves and the instance panel displays.
+        cd.remote_socket = Some(peer);
         cd.established = chrono::Utc::now();
         let instance = cd.remote_instance;
 

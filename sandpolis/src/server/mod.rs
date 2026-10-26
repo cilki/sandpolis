@@ -392,6 +392,31 @@ pub async fn main(options: RuntimeOptions, state: InstanceState) -> Result<()> {
         ));
     }
 
+    // Where the instances attached here are, for the realms that asked. Writing
+    // needs no ownership grant for the same reason liveness doesn't: the row is
+    // this server's own observation, scoped to itself. Only the global stratum
+    // server reads realm configs, so for now only it geolocates — a local
+    // stratum server's instances stay unlocated until it has a config of its
+    // own to consult.
+    for realm in &options.realms {
+        let config = &realm.server.location;
+        if !config.enabled {
+            continue;
+        }
+
+        info!(realm = %realm.name, service = %config.service, "Resolving instance locations");
+        let locations = std::sync::Arc::new(sandpolis_server::location::server::Locations::new(
+            &state.server.database.realm(realm.name.clone())?,
+            state.instance.instance_id,
+            config,
+        )?);
+        tokio::spawn(sandpolis_server::location::server::maintain_locations(
+            state.network.clone(),
+            realm.name.clone(),
+            locations,
+        ));
+    }
+
     // The global stratum server claims its own attached instances against the
     // grant table; this is what revokes a local stratum server when an agent
     // moves here.
