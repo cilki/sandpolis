@@ -36,6 +36,20 @@ fn server_retry() -> RetryWait {
     }
 }
 
+/// The error and every cause under it, on one line.
+///
+/// The reason a connection failed is always the innermost cause — "Connection
+/// refused", "certificate has expired" — and `Display` on the outer error shows
+/// none of it, which is the difference between a log line someone can act on
+/// and "error sending request".
+fn error_chain(error: &anyhow::Error) -> String {
+    error
+        .chain()
+        .map(|cause| cause.to_string())
+        .collect::<Vec<_>>()
+        .join(": ")
+}
+
 /// Bring up everything an agent needs and run it: the realm named by its realm
 /// cert, the database its collectors write into, and the subsystems over both.
 #[cfg(not(target_os = "android"))]
@@ -152,6 +166,7 @@ pub async fn main(
         // reconnecting whenever it drops.
         ServerConnectStrategy::Continuous => {
             let mut retry = server_retry();
+            let mut failures = 0;
             loop {
                 // Every path through this loop comes back round, because an
                 // agent that stops trying is indistinguishable from one that
@@ -161,6 +176,7 @@ pub async fn main(
                     &network,
                     &instance,
                     &url,
+                    failures,
                     #[cfg(feature = "uki")]
                     &boot,
                 )
@@ -171,6 +187,7 @@ pub async fn main(
                     Ok(uptime) if uptime >= STABLE_AFTER => {
                         warn!(url = %url, uptime = ?uptime, "Server connection cancelled, reconnecting");
                         retry = server_retry();
+                        failures = 0;
                         retry.next().unwrap()
                     }
                     // Established but immediately dropped: keep backing off,
@@ -178,12 +195,26 @@ pub async fn main(
                     // produces a hot loop.
                     Ok(uptime) => {
                         let wait = retry.next().unwrap();
+                        failures = 0;
                         warn!(url = %url, uptime = ?uptime, waiting = ?wait, "Server connection dropped quickly; backing off");
                         wait
                     }
+                    // An agent nobody is watching interactively gets one log
+                    // line and nothing else, so this has to be loud: at `debug`
+                    // an agent that could never reach its server said nothing
+                    // at all. Warning on every attempt is affordable because
+                    // the backoff above caps at a minute — the same trade
+                    // `sandpolis_server::stratum` makes on its own retry loop.
                     Err(e) => {
                         let wait = retry.next().unwrap();
-                        debug!(error = %e, url = %url, waiting = ?wait, "Connection attempt failed");
+                        failures += 1;
+                        warn!(
+                            error = error_chain(&e),
+                            url = %url,
+                            waiting = ?wait,
+                            failures,
+                            "Cannot reach the server; retrying"
+                        );
                         wait
                     }
                 };
@@ -198,7 +229,11 @@ pub async fn main(
         ServerConnectStrategy::Polling { schedule, timeout } => {
             // Build the connection (http client + banner) once and reuse
             // it; only the websocket opens and closes per window.
-            let mut retry = RetryWait::default();
+            // The same backoff and the same reporting as the continuous loop:
+            // a polling agent that can't reach its server at all is in exactly
+            // the same trouble, and has even less chance of being noticed.
+            let mut retry = server_retry();
+            let mut failures = 0;
             let entry = loop {
                 match server
                     .connect_with_strategy(url.clone(), strategy.clone())
@@ -207,7 +242,14 @@ pub async fn main(
                     Ok(connection) => break Arc::new(connection),
                     Err(e) => {
                         let wait = retry.next().unwrap();
-                        debug!(error = %e, url = %url, waiting = ?wait, "Connection attempt failed");
+                        failures += 1;
+                        warn!(
+                            error = error_chain(&e),
+                            url = %url,
+                            waiting = ?wait,
+                            failures,
+                            "Cannot reach the server; retrying"
+                        );
                         sleep(wait).await;
                     }
                 }
@@ -246,11 +288,17 @@ pub async fn main(
 /// Returns how long the websocket stayed up, or an error if it never came up.
 /// Nothing is waited out in here: the caller owns the backoff, so that every way
 /// an attempt can fail is retried the same way.
+///
+/// `failures` is how many consecutive attempts failed before this one, which is
+/// the recovery half of the story the warnings tell: it says the agent is up
+/// *and* how long it spent getting there, so a flapping link is visible without
+/// turning on `--debug`.
 async fn attempt_connection(
     server: &sandpolis_server::ServerManager,
     network: &sandpolis_instance::network::NetworkManager,
     instance: &sandpolis_instance::InstanceManager,
     url: &sandpolis_server::ServerUrl,
+    failures: u32,
     #[cfg(feature = "uki")] boot: &Arc<BootAgentState>,
 ) -> Result<Duration> {
     let entry = Arc::new(server.connect(url.clone()).await?);
@@ -269,7 +317,7 @@ async fn attempt_connection(
     // here instead would wedge the agent for good, since the only thing that
     // cancels `entry` is its own `Drop` and this frame holds an `Arc` to it.
     let socket = entry.open_websocket(network, instance).await?;
-    info!(url = %url, "Connected to server");
+    info!(url = %url, failures, "Connected to server");
 
     // A boot agent announces itself so the server can place a boot hold (and
     // later release it).
@@ -373,6 +421,52 @@ mod test_server_retry {
         assert!(
             STABLE_AFTER > first,
             "a connection that dies inside the first backoff window must not count as stable"
+        );
+    }
+}
+
+#[cfg(test)]
+mod test_connect_reporting {
+    use super::*;
+
+    /// The innermost cause is what says *why* the connection failed, so it has
+    /// to survive into the one line the log prints.
+    #[test]
+    fn the_report_names_the_root_cause() {
+        let error = anyhow::Error::msg("Connection refused")
+            .context("client error (Connect)")
+            .context("error sending request");
+        assert_eq!(
+            error_chain(&error),
+            "error sending request: client error (Connect): Connection refused"
+        );
+    }
+
+    /// Every failed attempt is warned about, which is only affordable because
+    /// the backoff spaces them out: an agent may be pointed at a server that is
+    /// down for hours, and a warning every few seconds for that long would bury
+    /// everything else in the log. Over a long outage the reports have to
+    /// settle to roughly one a minute.
+    #[test]
+    fn a_long_outage_reports_about_once_a_minute() {
+        let hour = Duration::from_secs(3600);
+        let mut elapsed = Duration::ZERO;
+        let mut reports = 0;
+        for wait in server_retry() {
+            if elapsed >= hour {
+                break;
+            }
+            elapsed += wait;
+            reports += 1;
+        }
+
+        assert!(
+            reports <= 75,
+            "{reports} warnings in the first hour of an outage is too many"
+        );
+        assert!(
+            reports >= 60,
+            "{reports} warnings in the first hour of an outage is too few to show the agent is still trying"
         );
     }
 }
