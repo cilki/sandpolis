@@ -18,6 +18,24 @@ use tracing::error;
 #[cfg(feature = "uki")]
 pub mod boot;
 
+/// How long a server connection must stay up before it counts as healthy and
+/// the backoff resets. Without it, a server that accepts the websocket and then
+/// immediately drops it would reset the backoff on every attempt, and the agent
+/// would reconnect in a tight loop.
+const STABLE_AFTER: Duration = Duration::from_secs(30);
+
+/// Backoff for reaching the server. Starts fast, because a restarting server is
+/// usually back within seconds, and caps out so a long outage doesn't turn into
+/// a busy loop against a server that is likely already struggling.
+fn server_retry() -> RetryWait {
+    RetryWait::Exponential {
+        initial: Duration::from_secs(1),
+        constant: 20.0,
+        limit: Some(Duration::from_secs(60)),
+        iteration: 0,
+    }
+}
+
 /// Bring up everything an agent needs and run it: the realm named by its realm
 /// cert, the database its collectors write into, and the subsystems over both.
 #[cfg(not(target_os = "android"))]
@@ -133,79 +151,44 @@ pub async fn main(
         // Hold a single connection open for the agent's lifetime,
         // reconnecting whenever it drops.
         ServerConnectStrategy::Continuous => {
-            let mut retry = RetryWait::default();
+            let mut retry = server_retry();
             loop {
-                match server.connect(url.clone()).await {
-                    Ok(connection) => {
-                        info!(url = %url, "Connected to server");
-                        let cancel = connection.cancel.clone();
-                        let entry = Arc::new(connection);
-                        server.outbound.write().unwrap().push(entry.clone());
-
-                        // Establish the websocket so the server can sync
-                        // our database.
-                        let socket = match entry.open_websocket(&network, &instance).await {
-                            Ok(socket) => Some(socket),
-                            Err(e) => {
-                                warn!(error = %e, url = %url, "Failed to open websocket");
-                                None
-                            }
-                        };
-                        retry = RetryWait::default();
-
-                        // A boot agent announces itself so the server can
-                        // place a boot hold (and later release it).
-                        #[cfg(feature = "uki")]
-                        {
-                            *boot.server.lock().unwrap() =
-                                Some(format!("{}:{}", url.host, url.port));
-                            if let Some(socket) = &socket
-                                && let Err(e) = socket
-                                    .open_stream(
-                                        BootStreamRequester {
-                                            state: boot.clone(),
-                                        },
-                                        BootStreamRequest::Announce {
-                                            agent: instance.instance_id,
-                                        },
-                                    )
-                                    .await
-                            {
-                                warn!(error = %e, "Failed to open boot stream");
-                            }
-                        }
-
-                        // Reconnect when either token fires: the socket's, which
-                        // is what a server-side drop or a dead peer cancels, or
-                        // the connection's own. Waiting on the latter alone would
-                        // never wake, since this loop holds the `Arc` that would
-                        // have to drop first.
-                        match socket {
-                            Some(socket) => {
-                                tokio::select! {
-                                    _ = socket.cancel.cancelled() => {}
-                                    _ = cancel.cancelled() => {}
-                                }
-                            }
-                            None => cancel.cancelled().await,
-                        }
-                        server
-                            .outbound
-                            .write()
-                            .unwrap()
-                            .retain(|c| !Arc::ptr_eq(c, &entry));
-                        #[cfg(feature = "uki")]
-                        {
-                            *boot.server.lock().unwrap() = None;
-                        }
-                        warn!(url = %url, "Server connection cancelled, reconnecting");
+                // Every path through this loop comes back round, because an
+                // agent that stops trying is indistinguishable from one that
+                // died — and nobody is watching its logs to find out which.
+                let wait = match attempt_connection(
+                    &server,
+                    &network,
+                    &instance,
+                    &url,
+                    #[cfg(feature = "uki")]
+                    &boot,
+                )
+                .await
+                {
+                    // The connection was up long enough to count as healthy, so
+                    // treat this outage as a fresh one and reconnect promptly.
+                    Ok(uptime) if uptime >= STABLE_AFTER => {
+                        warn!(url = %url, uptime = ?uptime, "Server connection cancelled, reconnecting");
+                        retry = server_retry();
+                        retry.next().unwrap()
+                    }
+                    // Established but immediately dropped: keep backing off,
+                    // otherwise a server that accepts and then drops us
+                    // produces a hot loop.
+                    Ok(uptime) => {
+                        let wait = retry.next().unwrap();
+                        warn!(url = %url, uptime = ?uptime, waiting = ?wait, "Server connection dropped quickly; backing off");
+                        wait
                     }
                     Err(e) => {
                         let wait = retry.next().unwrap();
                         debug!(error = %e, url = %url, waiting = ?wait, "Connection attempt failed");
-                        sleep(wait).await;
+                        wait
                     }
-                }
+                };
+
+                sleep(wait).await;
             }
         }
 
@@ -255,5 +238,141 @@ pub async fn main(
                 }
             }
         }
+    }
+}
+
+/// One attempt at connecting to the server and holding the connection open.
+///
+/// Returns how long the websocket stayed up, or an error if it never came up.
+/// Nothing is waited out in here: the caller owns the backoff, so that every way
+/// an attempt can fail is retried the same way.
+async fn attempt_connection(
+    server: &sandpolis_server::ServerManager,
+    network: &sandpolis_instance::network::NetworkManager,
+    instance: &sandpolis_instance::InstanceManager,
+    url: &sandpolis_server::ServerUrl,
+    #[cfg(feature = "uki")] boot: &Arc<BootAgentState>,
+) -> Result<Duration> {
+    let entry = Arc::new(server.connect(url.clone()).await?);
+    server.outbound.write().unwrap().push(entry.clone());
+
+    // Drop the bookkeeping however this attempt ends, the early return below
+    // included.
+    let _guard = OutboundGuard {
+        server,
+        connection: entry.clone(),
+    };
+
+    // The websocket is what the server syncs this agent's database over and
+    // what carries every stream, so a connection without one is no use to
+    // anybody: fail the attempt and let the caller come back round. Waiting
+    // here instead would wedge the agent for good, since the only thing that
+    // cancels `entry` is its own `Drop` and this frame holds an `Arc` to it.
+    let socket = entry.open_websocket(network, instance).await?;
+    info!(url = %url, "Connected to server");
+
+    // A boot agent announces itself so the server can place a boot hold (and
+    // later release it).
+    #[cfg(feature = "uki")]
+    {
+        *boot.server.lock().unwrap() = Some(format!("{}:{}", url.host, url.port));
+        if let Err(e) = socket
+            .open_stream(
+                BootStreamRequester {
+                    state: boot.clone(),
+                },
+                BootStreamRequest::Announce {
+                    agent: instance.instance_id,
+                },
+            )
+            .await
+        {
+            warn!(error = %e, "Failed to open boot stream");
+        }
+    }
+
+    let established = tokio::time::Instant::now();
+
+    // Reconnect when either token fires: the socket's, which is what a
+    // server-side drop or a dead peer cancels, or the connection's own, which
+    // only something outside this loop can cancel.
+    tokio::select! {
+        _ = socket.cancel.cancelled() => {}
+        _ = entry.cancel.cancelled() => {}
+    }
+
+    #[cfg(feature = "uki")]
+    {
+        *boot.server.lock().unwrap() = None;
+    }
+
+    Ok(established.elapsed())
+}
+
+/// Removes a connection from `outbound` however the attempt ends, so a failure
+/// partway through doesn't leave a dead entry behind.
+struct OutboundGuard<'a> {
+    server: &'a sandpolis_server::ServerManager,
+    connection: Arc<sandpolis_server::ServerConnection>,
+}
+
+impl Drop for OutboundGuard<'_> {
+    fn drop(&mut self) {
+        self.server
+            .outbound
+            .write()
+            .unwrap()
+            .retain(|c| !Arc::ptr_eq(c, &self.connection));
+    }
+}
+
+#[cfg(test)]
+mod test_server_retry {
+    use super::*;
+
+    /// The backoff must grow and then stop growing. An agent whose server is
+    /// down retries forever, so an uncapped delay would take absurdly long to
+    /// recover and a flat one would hammer the server.
+    #[test]
+    fn backoff_grows_and_caps() {
+        let waits: Vec<Duration> = server_retry().take(40).collect();
+
+        assert!(
+            waits[0] <= Duration::from_secs(2),
+            "the first retry should be prompt, not {:?}",
+            waits[0]
+        );
+
+        for pair in waits.windows(2) {
+            assert!(
+                pair[1] >= pair[0],
+                "backoff must never shrink: {:?} then {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+
+        let cap = Duration::from_secs(60);
+        assert!(
+            waits.iter().all(|w| *w <= cap),
+            "backoff must stay under the cap"
+        );
+        assert_eq!(
+            *waits.last().unwrap(),
+            cap,
+            "a long outage should settle at the cap"
+        );
+    }
+
+    /// A connection has to stay up a while before it counts as healthy,
+    /// otherwise a server that accepts and instantly drops us resets the
+    /// backoff every time and the agent spins.
+    #[test]
+    fn stability_threshold_exceeds_first_backoff() {
+        let first = server_retry().next().unwrap();
+        assert!(
+            STABLE_AFTER > first,
+            "a connection that dies inside the first backoff window must not count as stable"
+        );
     }
 }
