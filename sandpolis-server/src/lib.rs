@@ -37,7 +37,6 @@ pub mod client;
 pub mod config;
 #[cfg(feature = "server")]
 pub mod liveness;
-pub mod location;
 pub mod login;
 #[cfg(feature = "server")]
 pub mod ownership;
