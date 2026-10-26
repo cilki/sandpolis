@@ -584,7 +584,7 @@ pub async fn connect(
             sandpolis_instance::network::collected_responders().collect();
         handlers.push(&sync_reg);
 
-        let connection = InstanceConnection::websocket(socket, data, realm, cluster_id, &handlers);
+        let connection = InstanceConnection::socket(socket, data, realm, cluster_id, &handlers);
 
         if let Some(poll) = poll {
             let _ = connection.poll.set(poll);

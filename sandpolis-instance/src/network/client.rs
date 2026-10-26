@@ -1,123 +1,30 @@
-use super::{
-    ConnectionData, InstanceConnection, RegisterResponders,
-    stream::{StreamMessage, StreamRegistry},
-};
-use crate::ClusterId;
-use crate::database::Resident;
-use crate::realm::RealmName;
-use futures_util::{SinkExt, StreamExt};
-use reqwest_websocket::{Message, WebSocket};
-use std::sync::Arc;
-use tokio_util::sync::CancellationToken;
+//! The dialing side of a connection: a websocket `reqwest` upgraded for us.
+//! Driving it is [`super::socket`]'s job — the same loop the accept side runs,
+//! so streams are symmetric across the connection — and this is only the
+//! message type it speaks.
 
-impl InstanceConnection {
-    /// Wrap a client/agent-side `reqwest_websocket::WebSocket` with an
-    /// `InstanceConnection`.
-    ///
-    /// This is the dialing counterpart to [`InstanceConnection::websocket`] (the
-    /// server-side accept path). Both speak the same cbor-encoded `StreamMessage`
-    /// protocol so streams are symmetric across the connection.
-    pub fn websocket_client(
-        socket: WebSocket,
-        data: Resident<ConnectionData>,
-        realm: RealmName,
-        cluster_id: ClusterId,
-        handlers: &[&dyn RegisterResponders],
-    ) -> Arc<Self> {
-        let cancel = CancellationToken::new();
-        let cancel_clone = cancel.clone();
+use super::socket::{Frame, SocketMessage};
+use reqwest_websocket::Message;
 
-        // Channel for the StreamRegistry to send outgoing StreamMessages
-        let (stream_tx, mut stream_rx) = tokio::sync::mpsc::channel::<StreamMessage>(32);
-        let streams = Arc::new(StreamRegistry::new(stream_tx));
-        let streams_clone = streams.clone();
+impl SocketMessage for Message {
+    fn binary(payload: Vec<u8>) -> Self {
+        Message::Binary(payload.into())
+    }
 
-        // Register responders from all handlers
-        for handler in handlers {
-            handler.register_responders(&streams);
+    fn ping(payload: Vec<u8>) -> Self {
+        Message::Ping(payload.into())
+    }
+
+    fn pong(payload: Vec<u8>) -> Self {
+        Message::Pong(payload.into())
+    }
+
+    fn frame(&self) -> Frame<'_> {
+        match self {
+            Message::Binary(payload) => Frame::Binary(payload),
+            Message::Ping(payload) => Frame::Ping(payload),
+            Message::Pong(payload) => Frame::Pong(payload),
+            Message::Text(_) | Message::Close { .. } => Frame::Other,
         }
-
-        // The socket task times its own keepalive, so it writes the connection
-        // row the same as the `InstanceConnection` it belongs to.
-        let mut latency = crate::network::LatencyProbe::new(data.clone());
-
-        // Spawn task that owns the actual WebSocket
-        tokio::spawn(async move {
-            let (mut ws_tx, mut ws_rx) = socket.split();
-
-            let mut keepalive = tokio::time::interval(crate::network::KEEPALIVE_INTERVAL);
-            keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            let mut last_frame = tokio::time::Instant::now();
-
-            loop {
-                tokio::select! {
-                    // Prove the peer is still there. Tungstenite answers a ping
-                    // itself, so any frame arriving is enough to keep this from
-                    // firing — no cooperation needed from the other end.
-                    _ = keepalive.tick() => {
-                        if last_frame.elapsed() > crate::network::KEEPALIVE_DEADLINE {
-                            break;
-                        }
-                        if ws_tx.send(Message::Ping(latency.ping().into())).await.is_err() {
-                            break;
-                        }
-                    }
-                    // Handle outgoing stream messages
-                    Some(msg) = stream_rx.recv() => {
-                        let data = serde_cbor::to_vec(&msg).unwrap();
-                        streams_clone.record_tx(msg.stream_id, data.len() as u64);
-                        if ws_tx.send(Message::Binary(data.into())).await.is_err() {
-                            break;
-                        }
-                    }
-                    // Handle incoming messages from websocket
-                    msg = ws_rx.next() => {
-                        // Any frame at all, including the pong answering our
-                        // ping, says the peer is alive.
-                        last_frame = tokio::time::Instant::now();
-                        match msg {
-                            Some(Ok(Message::Binary(data))) => {
-                                if let Ok(message) = serde_cbor::from_slice::<StreamMessage>(&data) {
-                                    streams_clone.record_rx(message.stream_id, data.len() as u64);
-                                    streams_clone.dispatch(message).await;
-                                }
-                            }
-                            // Tungstenite queues a pong itself, but only flushes
-                            // it on the next write; answering here guarantees
-                            // one, which is what the peer's deadline is waiting
-                            // for.
-                            Some(Ok(Message::Ping(payload))) => {
-                                if ws_tx.send(Message::Pong(payload)).await.is_err() {
-                                    break;
-                                }
-                            }
-                            Some(Ok(Message::Pong(payload))) => {
-                                latency.pong(&payload);
-                            }
-                            Some(Ok(_)) => {}
-                            Some(Err(_)) | None => break,
-                        }
-                    }
-                    // Handle cancellation
-                    _ = cancel_clone.cancelled() => {
-                        break;
-                    }
-                }
-            }
-
-            // However the socket ended, the connection is over. Cancelling here
-            // is what tells the rest of the process: every `is_cancelled` check
-            // and every janitor waiting on this token keys off it.
-            cancel_clone.cancel();
-        });
-
-        Arc::new(Self {
-            data,
-            realm,
-            cluster_id,
-            cancel,
-            streams,
-            poll: Default::default(),
-        })
     }
 }

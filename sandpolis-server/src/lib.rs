@@ -424,7 +424,7 @@ impl ServerConnection {
         let mut handlers: Vec<&dyn sandpolis_instance::network::RegisterResponders> =
             collected_responders().collect();
         handlers.push(&sync_reg);
-        let connection = InstanceConnection::websocket_client(
+        let connection = InstanceConnection::socket(
             socket,
             data,
             self.realm.clone(),

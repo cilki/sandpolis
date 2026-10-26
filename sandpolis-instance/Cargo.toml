@@ -66,6 +66,10 @@ ndk-context = { version = "0.1", optional = true }
 
 [dev-dependencies]
 test-log = { version = "0.2.18", features = ["trace"] }
+
+# `test-util` is not part of tokio's `full`, and the socket tests need a paused
+# clock to reach the keepalive deadline without waiting for it.
+tokio = { workspace = true, features = ["test-util"] }
 criterion = { version = "0.8.2", features = ["html_reports", "async_tokio"] }
 
 # Used to test certificate authentication with a different backend

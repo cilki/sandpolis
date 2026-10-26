@@ -45,6 +45,8 @@ pub mod ping;
 pub mod reachability;
 #[cfg(feature = "server")]
 pub mod server;
+#[cfg(any(feature = "agent", feature = "client", feature = "server"))]
+pub mod socket;
 pub mod stream;
 pub mod sync;
 
