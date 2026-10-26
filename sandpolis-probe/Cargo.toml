@@ -7,7 +7,6 @@ version = "0.0.1"
 
 [dependencies]
 anyhow = { workspace = true }
-arp-toolkit = { version = "0.3.2", optional = true, features = ["sync"] }
 bollard = { workspace = true, optional = true }
 clap = { workspace = true, optional = true }
 futures = { workspace = true }
@@ -63,7 +62,6 @@ agent = [
 # Only servers connect to probes, so the filesystem protocol clients are here
 # and not in `agent`.
 server = [
-  "dep:arp-toolkit",
   "dep:pnet",
   "dep:bollard",
   "dep:nfs3_client",

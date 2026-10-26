@@ -15,19 +15,21 @@ sandpolis-instance = { path = "../sandpolis-instance", version = "0.0.1" }
 sandpolis-macros = { path = "../sandpolis-macros", version = "0.0.1" }
 sandpolis-probe = { path = "../sandpolis-probe", version = "0.0.1", optional = true }
 vnc = { version = "0.4", optional = true }
-# RDP probe backend. The connector's `sspi ^0.21` matches the workspace's pinned
-# `sspi` rev (see the root Cargo.toml patch); the tls crate's `rustls` feature
-# resolves to aws-lc-rs, the same provider the rest of the tree uses.
-ironrdp-connector = { version = "0.10", optional = true }
-ironrdp-session = { version = "0.11", optional = true }
-ironrdp-graphics = { version = "0.9", optional = true }
-ironrdp-pdu = { version = "0.9", optional = true }
-ironrdp-svc = { version = "0.8", optional = true }
-ironrdp-core = { version = "0.2", optional = true }
-ironrdp-input = { version = "0.7", optional = true }
-ironrdp-async = { version = "0.10", optional = true }
-ironrdp-tokio = { version = "0.10", features = ["reqwest"], optional = true }
-ironrdp-tls = { version = "0.2", features = ["rustls"], optional = true }
+# RDP probe backend. The connector pulls `sspi ^0.23` from crates.io, separate
+# from the patched 0.21 that `smb` uses (see the root Cargo.toml patch); the two
+# never exchange types. The tls crate's `rustls` feature resolves to aws-lc-rs,
+# the same provider the rest of the tree uses. These crates release in lockstep,
+# so bump them together.
+ironrdp-connector = { version = "0.11", optional = true }
+ironrdp-session = { version = "0.12", optional = true }
+ironrdp-graphics = { version = "0.10", optional = true }
+ironrdp-pdu = { version = "0.10", optional = true }
+ironrdp-svc = { version = "0.9", optional = true }
+ironrdp-core = { version = "0.3", optional = true }
+ironrdp-input = { version = "0.8", optional = true }
+ironrdp-async = { version = "0.11", optional = true }
+ironrdp-tokio = { version = "0.11", features = ["reqwest"], optional = true }
+ironrdp-tls = { version = "0.3", features = ["rustls"], optional = true }
 tokio-util = { workspace = true, optional = true }
 native_db = { workspace = true }
 native_model = { workspace = true }

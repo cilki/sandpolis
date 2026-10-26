@@ -551,6 +551,86 @@ mod server {
             assert_eq!(text(&"media\0"), "media");
             assert_eq!(text(&"media"), "media");
         }
+
+        /// End-to-end against the probe test container's Samba
+        /// (`sandpolis-probe/tests/`): NTLM session setup with Kerberos off,
+        /// then list/stat/read on the seeded tree.
+        ///
+        /// [`enumerate`] is deliberately not covered: `smb` speaks DCE/RPC over
+        /// NDR64 only, which Samba rejects at bind time, so share listing only
+        /// works against Windows servers.
+        ///
+        /// ```shell
+        /// docker run --rm --network host -e SERVICES=smb sandpolis/test-probe
+        /// cargo test -p sandpolis-probe --features server smb_against_test_container -- --ignored
+        /// ```
+        ///
+        /// `SMB_TEST_HOST` / `SMB_TEST_PORT` point it elsewhere, e.g. port 4445
+        /// when the container runs rootless with host networking. Runs on the
+        /// multi-threaded runtime the server uses, under a timeout, so a hung
+        /// directory stream fails instead of blocking forever.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        #[ignore = "needs the probe test container's Samba"]
+        async fn smb_against_test_container() {
+            let ip: IpAddr = std::env::var("SMB_TEST_HOST")
+                .unwrap_or_else(|_| "127.0.0.1".into())
+                .parse()
+                .expect("SMB_TEST_HOST is an IP address");
+            let port = std::env::var("SMB_TEST_PORT")
+                .ok()
+                .map(|p| p.parse().expect("SMB_TEST_PORT is a port"));
+            let config = SmbProbeConfig {
+                share: "media".into(),
+                port,
+                username: Some("probe".into()),
+                password: Some("password".into()),
+                domain: Some("WORKGROUP".into()),
+            };
+
+            let run = async {
+                let fs = SmbFs::mount(ip, &config).await.expect("mount share");
+
+                let mut root: Vec<String> =
+                    fs.list(Path::new("/")).await.expect("list /").into_iter().map(|e| e.name).collect();
+                root.sort();
+                assert_eq!(root, ["docs", "top.txt"]);
+
+                let mut docs: Vec<(String, FileKind)> = fs
+                    .list(Path::new("/docs"))
+                    .await
+                    .expect("list /docs")
+                    .into_iter()
+                    .map(|e| (e.name, e.kind))
+                    .collect();
+                docs.sort_by(|a, b| a.0.cmp(&b.0));
+                assert_eq!(
+                    docs,
+                    [
+                        ("empty.txt".to_string(), FileKind::File),
+                        ("nested".to_string(), FileKind::Dir),
+                        ("readme.txt".to_string(), FileKind::File),
+                    ]
+                );
+
+                let attr = fs.stat(Path::new("/docs/readme.txt")).await.expect("stat");
+                assert_eq!(attr.kind, FileKind::File);
+                let content = fs
+                    .read(Path::new("/docs/readme.txt"), 0, 4096)
+                    .await
+                    .expect("read readme.txt");
+                assert_eq!(String::from_utf8_lossy(&content).trim_end(), "hello probe");
+                assert_eq!(attr.size, content.len() as u64);
+
+                let deep = fs
+                    .read(Path::new("/docs/nested/deep.txt"), 0, 4096)
+                    .await
+                    .expect("read deep.txt");
+                assert_eq!(String::from_utf8_lossy(&deep).trim_end(), "deep");
+            };
+            tokio::time::timeout(std::time::Duration::from_secs(60), run)
+                .await
+                .expect("SMB round trips finished within 60s");
+        }
     }
 }
 

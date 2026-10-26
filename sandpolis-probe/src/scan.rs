@@ -15,16 +15,21 @@ use crate::ProbeType;
 use crate::config::{DeviceConfig, ScanConfig};
 use anyhow::Result;
 use futures::stream::StreamExt;
-use libarp::client::ArpClient;
-use pnet::datalink;
+use pnet::datalink::{self, Channel, DataLinkReceiver, DataLinkSender, NetworkInterface};
 use pnet::ipnetwork::{IpNetwork, Ipv4Network};
+use pnet::packet::{MutablePacket, Packet};
+use pnet::packet::arp::{ArpHardwareTypes, ArpOperations, ArpPacket, MutableArpPacket};
+use pnet::packet::ethernet::{EtherTypes, EthernetPacket, MutableEthernetPacket};
+use pnet::util::MacAddr;
 use sandpolis_instance::LayerName;
 use sandpolis_instance::notification::{self, Notification};
 use sandpolis_instance::service::{Service, ServiceReport, ServiceSchedule};
 use sandpolis_server::ServerUrl;
 use std::collections::{HashMap, HashSet};
+use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
@@ -33,10 +38,21 @@ use tracing::{debug, warn};
 /// prefix (say a `/8`) would otherwise ARP millions of hosts.
 const MAX_SUBNET_HOSTS: u64 = 1 << 16;
 
+/// ARP requests are sent in bursts of this many frames...
+const ARP_BURST: usize = 64;
+/// ...with this pause between bursts, so sweeping a `/16` doesn't flood the
+/// segment (or the NIC's transmit queue) with 65k broadcasts at line rate.
+const ARP_BURST_PAUSE: Duration = Duration::from_millis(1);
+/// How long the receiver blocks per read before rechecking whether to stop.
+const ARP_READ_TIMEOUT: Duration = Duration::from_millis(100);
+/// Ethernet header (14) + ARP payload for IPv4 over Ethernet (28).
+const ARP_FRAME_LEN: usize = 42;
+
 /// One subnet to sweep, and the interface to send from.
 struct ScanTarget {
     network: Ipv4Network,
-    /// Interface name to bind the ARP client to; `None` lets the client guess.
+    /// Interface to send from. `None` picks the interface whose address is in
+    /// `network`, falling back to the first usable one.
     iface: Option<String>,
 }
 
@@ -92,8 +108,8 @@ impl Service for ScanService {
 
         let local_ips = local_ipv4_addrs();
 
-        // ARP uses raw sockets and pnet's receive blocks, so the sweep runs off
-        // the async executor.
+        // ARP uses raw sockets and pnet's send/receive block, so the sweep runs
+        // off the async executor.
         let sweep_cancel = cancel.clone();
         let arp_timeout = Duration::from_millis(self.config.arp_timeout_ms.max(1));
         let live =
@@ -230,50 +246,239 @@ fn arp_sweep(
     cancel: &CancellationToken,
 ) -> Result<Vec<Ipv4Addr>> {
     let mut live = Vec::new();
-    let mut any_client_ok = false;
+    let mut any_socket_ok = false;
 
     for target in targets {
         if cancel.is_cancelled() {
             break;
         }
 
-        let client = match &target.iface {
-            Some(name) => ArpClient::new_with_iface_name(name),
-            None => ArpClient::new(),
+        let Some((iface, mac, source)) = sweep_interface(target) else {
+            warn!(
+                iface = ?target.iface,
+                network = %target.network,
+                "Probe scan: no interface with a MAC and IPv4 address to sweep from"
+            );
+            continue;
         };
-        let mut client = match client {
-            Ok(client) => {
-                any_client_ok = true;
-                client
+
+        let config = datalink::Config {
+            read_timeout: Some(ARP_READ_TIMEOUT),
+            // Replies are unicast to our own MAC; there's no need to see the
+            // rest of the segment's traffic.
+            promiscuous: false,
+            ..Default::default()
+        };
+        let (tx, rx) = match datalink::channel(&iface, config) {
+            Ok(Channel::Ethernet(tx, rx)) => {
+                any_socket_ok = true;
+                (tx, rx)
+            }
+            Ok(_) => {
+                warn!(iface = %iface.name, "Probe scan: unsupported datalink channel type");
+                continue;
             }
             Err(e) => {
-                warn!(iface = ?target.iface, error = %e, "Probe scan: cannot open ARP socket");
+                warn!(iface = %iface.name, error = %e, "Probe scan: cannot open ARP socket");
                 continue;
             }
         };
 
         let network = target.network.network();
         let broadcast = target.network.broadcast();
-        for host in target.network.iter() {
-            if cancel.is_cancelled() {
-                break;
-            }
-            if host == network || host == broadcast || skip.contains(&host) {
-                continue;
-            }
-            if client.ip_to_mac(host, Some(timeout)).is_ok() {
-                live.push(host);
-            }
-        }
+        let hosts: Vec<Ipv4Addr> = target
+            .network
+            .iter()
+            .filter(|host| *host != network && *host != broadcast && !skip.contains(host))
+            .collect();
+
+        debug!(
+            iface = %iface.name,
+            network = %target.network,
+            hosts = hosts.len(),
+            "Probe scan: ARP-sweeping subnet"
+        );
+        live.extend(sweep_subnet(tx, rx, mac, source, &hosts, timeout, cancel));
     }
 
-    if !any_client_ok {
+    if !any_socket_ok {
         anyhow::bail!("could not open any ARP socket (discovery needs CAP_NET_RAW or root)");
     }
 
     live.sort_unstable();
     live.dedup();
     Ok(live)
+}
+
+/// The interface to sweep `target` from, with its MAC and the IPv4 address to
+/// put in the requests' sender field.
+///
+/// The sender address is the interface's address *in the target subnet* when it
+/// has one: some hosts drop ARP requests whose sender isn't on their segment.
+fn sweep_interface(target: &ScanTarget) -> Option<(NetworkInterface, MacAddr, Ipv4Addr)> {
+    let usable = |iface: &NetworkInterface| {
+        iface.is_up()
+            && !iface.is_loopback()
+            && iface.mac.is_some_and(|mac| mac != MacAddr::zero())
+            && iface.ips.iter().any(IpNetwork::is_ipv4)
+    };
+    let in_target = |iface: &NetworkInterface| {
+        iface.ips.iter().any(|ip| match ip {
+            IpNetwork::V4(net) => target.network.contains(net.ip()),
+            IpNetwork::V6(_) => false,
+        })
+    };
+
+    let interfaces = datalink::interfaces();
+    let iface = match &target.iface {
+        Some(name) => interfaces.into_iter().find(|i| &i.name == name),
+        None => {
+            let candidates: Vec<_> = interfaces.into_iter().filter(usable).collect();
+            candidates
+                .iter()
+                .find(|i| in_target(i))
+                .or(candidates.first())
+                .cloned()
+        }
+    }
+    .filter(usable)?;
+
+    let mac = iface.mac?;
+    let v4 = || {
+        iface.ips.iter().filter_map(|ip| match ip {
+            IpNetwork::V4(net) => Some(net.ip()),
+            IpNetwork::V6(_) => None,
+        })
+    };
+    let source = v4()
+        .find(|ip| target.network.contains(*ip))
+        .or_else(|| v4().next())?;
+    Some((iface, mac, source))
+}
+
+/// Broadcast a who-has for every host, then collect replies until `timeout`
+/// after the last request goes out.
+///
+/// Sending and receiving run concurrently (the receiver on its own thread), so
+/// the whole subnet costs roughly one `timeout` rather than one per silent host,
+/// and replies can't pile up in the socket's receive buffer while we're still
+/// transmitting.
+fn sweep_subnet(
+    mut tx: Box<dyn DataLinkSender>,
+    mut rx: Box<dyn DataLinkReceiver>,
+    mac: MacAddr,
+    source: Ipv4Addr,
+    hosts: &[Ipv4Addr],
+    timeout: Duration,
+    cancel: &CancellationToken,
+) -> HashSet<Ipv4Addr> {
+    let wanted: HashSet<Ipv4Addr> = hosts.iter().copied().collect();
+    let stop = AtomicBool::new(false);
+
+    std::thread::scope(|scope| {
+        let receiver = scope.spawn(|| {
+            let mut found = HashSet::new();
+            while !stop.load(Ordering::Relaxed) {
+                match rx.next() {
+                    Ok(frame) => {
+                        if let Some(ip) = parse_arp_reply(frame, mac)
+                            && wanted.contains(&ip)
+                        {
+                            found.insert(ip);
+                        }
+                    }
+                    // The read timeout elapsing is how the loop gets to recheck
+                    // `stop`.
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            ErrorKind::TimedOut | ErrorKind::WouldBlock | ErrorKind::Interrupted
+                        ) => {}
+                    Err(e) => {
+                        warn!(error = %e, "Probe scan: ARP receive failed");
+                        break;
+                    }
+                }
+            }
+            found
+        });
+
+        let mut frame = [0u8; ARP_FRAME_LEN];
+        let mut send_error_logged = false;
+        for (i, host) in hosts.iter().enumerate() {
+            if cancel.is_cancelled() {
+                break;
+            }
+            if i > 0 && i % ARP_BURST == 0 {
+                std::thread::sleep(ARP_BURST_PAUSE);
+            }
+            build_arp_request(&mut frame, mac, source, *host);
+            if let Some(Err(e)) = tx.send_to(&frame, None)
+                && !send_error_logged
+            {
+                // Typically ENOBUFS under load. One host missing a request just
+                // means it isn't found this pass; don't log 65k times.
+                warn!(error = %e, "Probe scan: ARP send failed");
+                send_error_logged = true;
+            }
+        }
+
+        // Late replies: wait out the timeout, in slices so cancellation is
+        // prompt.
+        let deadline = Instant::now() + timeout;
+        while !cancel.is_cancelled() {
+            let now = Instant::now();
+            if now >= deadline {
+                break;
+            }
+            std::thread::sleep((deadline - now).min(ARP_READ_TIMEOUT));
+        }
+
+        stop.store(true, Ordering::Relaxed);
+        receiver.join().unwrap_or_default()
+    })
+}
+
+/// Write a broadcast ARP who-has for `target` into `frame`.
+fn build_arp_request(
+    frame: &mut [u8; ARP_FRAME_LEN],
+    mac: MacAddr,
+    source: Ipv4Addr,
+    target: Ipv4Addr,
+) {
+    // Neither constructor can fail: the buffer is exactly the right size.
+    let mut ethernet = MutableEthernetPacket::new(frame).expect("ethernet frame fits");
+    ethernet.set_destination(MacAddr::broadcast());
+    ethernet.set_source(mac);
+    ethernet.set_ethertype(EtherTypes::Arp);
+
+    let mut arp = MutableArpPacket::new(ethernet.payload_mut()).expect("ARP payload fits");
+    arp.set_hardware_type(ArpHardwareTypes::Ethernet);
+    arp.set_protocol_type(EtherTypes::Ipv4);
+    arp.set_hw_addr_len(6);
+    arp.set_proto_addr_len(4);
+    arp.set_operation(ArpOperations::Request);
+    arp.set_sender_hw_addr(mac);
+    arp.set_sender_proto_addr(source);
+    arp.set_target_hw_addr(MacAddr::zero());
+    arp.set_target_proto_addr(target);
+}
+
+/// If `frame` is an ARP reply addressed to `own_mac`, the IPv4 address it
+/// announces.
+fn parse_arp_reply(frame: &[u8], own_mac: MacAddr) -> Option<Ipv4Addr> {
+    let ethernet = EthernetPacket::new(frame)?;
+    if ethernet.get_ethertype() != EtherTypes::Arp {
+        return None;
+    }
+    let arp = ArpPacket::new(ethernet.payload())?;
+    if arp.get_operation() != ArpOperations::Reply
+        || arp.get_protocol_type() != EtherTypes::Ipv4
+        || arp.get_target_hw_addr() != own_mac
+    {
+        return None;
+    }
+    Some(arp.get_sender_proto_addr())
 }
 
 /// TCP-connect to each candidate port on each live host, returning the protocols
@@ -285,9 +490,13 @@ async fn port_scan(
     concurrency: usize,
     cancel: &CancellationToken,
 ) -> HashMap<Ipv4Addr, Vec<ProbeType>> {
-    let probes = live
+    // Collected up front: a lazy `flat_map` over borrowed slices held across
+    // the awaits below trips rustc's higher-ranked lifetime check on the
+    // `Service::run` future's `Send` bound.
+    let probes: Vec<(Ipv4Addr, u16, ProbeType)> = live
         .iter()
-        .flat_map(|ip| ports.iter().map(move |(port, protocol)| (*ip, *port, *protocol)));
+        .flat_map(|ip| ports.iter().map(move |(port, protocol)| (*ip, *port, *protocol)))
+        .collect();
 
     let hits = futures::stream::iter(probes)
         .map(|(ip, port, protocol)| async move {
@@ -332,5 +541,61 @@ mod tests {
         assert_eq!(subnet_size(&"10.0.0.0/24".parse().unwrap()), 256);
         assert_eq!(subnet_size(&"10.0.0.0/30".parse().unwrap()), 4);
         assert_eq!(subnet_size(&"10.0.0.0/16".parse().unwrap()), 65536);
+    }
+
+    const OURS: MacAddr = MacAddr(0x02, 0, 0, 0, 0, 0x01);
+    const THEIRS: MacAddr = MacAddr(0x02, 0, 0, 0, 0, 0x02);
+
+    /// Turn a request built by [`build_arp_request`] into the reply its target
+    /// would send back.
+    fn reply_to(request: &[u8; ARP_FRAME_LEN], from: MacAddr) -> [u8; ARP_FRAME_LEN] {
+        let mut reply = *request;
+        let mut ethernet = MutableEthernetPacket::new(&mut reply).unwrap();
+        let requester = ethernet.get_source();
+        ethernet.set_destination(requester);
+        ethernet.set_source(from);
+        let mut arp = MutableArpPacket::new(ethernet.payload_mut()).unwrap();
+        let (asked, asker) = (arp.get_target_proto_addr(), arp.get_sender_proto_addr());
+        arp.set_operation(ArpOperations::Reply);
+        arp.set_sender_hw_addr(from);
+        arp.set_sender_proto_addr(asked);
+        arp.set_target_hw_addr(requester);
+        arp.set_target_proto_addr(asker);
+        reply
+    }
+
+    #[test]
+    fn arp_request_is_a_broadcast_who_has() {
+        let mut frame = [0u8; ARP_FRAME_LEN];
+        let (source, target) = (Ipv4Addr::new(10, 0, 0, 1), Ipv4Addr::new(10, 0, 0, 7));
+        build_arp_request(&mut frame, OURS, source, target);
+
+        let ethernet = EthernetPacket::new(&frame).unwrap();
+        assert_eq!(ethernet.get_destination(), MacAddr::broadcast());
+        assert_eq!(ethernet.get_source(), OURS);
+        assert_eq!(ethernet.get_ethertype(), EtherTypes::Arp);
+
+        let arp = ArpPacket::new(ethernet.payload()).unwrap();
+        assert_eq!(arp.get_operation(), ArpOperations::Request);
+        assert_eq!(arp.get_sender_hw_addr(), OURS);
+        assert_eq!(arp.get_sender_proto_addr(), source);
+        assert_eq!(arp.get_target_proto_addr(), target);
+
+        // Our own broadcast echoing back is not a reply.
+        assert_eq!(parse_arp_reply(&frame, OURS), None);
+    }
+
+    #[test]
+    fn arp_reply_yields_the_announced_address() {
+        let mut request = [0u8; ARP_FRAME_LEN];
+        let target = Ipv4Addr::new(10, 0, 0, 7);
+        build_arp_request(&mut request, OURS, Ipv4Addr::new(10, 0, 0, 1), target);
+        let reply = reply_to(&request, THEIRS);
+
+        assert_eq!(parse_arp_reply(&reply, OURS), Some(target));
+        // A reply to some other host's request isn't ours to count.
+        assert_eq!(parse_arp_reply(&reply, THEIRS), None);
+        // Truncated frames are ignored rather than panicking.
+        assert_eq!(parse_arp_reply(&reply[..20], OURS), None);
     }
 }

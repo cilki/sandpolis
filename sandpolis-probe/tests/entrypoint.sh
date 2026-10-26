@@ -406,8 +406,8 @@ start_smb() {
   valid users = $PROBE_USER
 EOF
 
-  # The `smb` client crate speaks raw NTLMSSP with Kerberos off, which is what
-  # Samba's default (NTLMv2-only) accepts.
+  # The `smb` client crate authenticates with NTLMv2 inside SPNEGO (Kerberos is
+  # off), which Samba's default accepts.
   printf '%s\n%s\n' "$PROBE_PASSWORD" "$PROBE_PASSWORD" |
     smbpasswd -s -c /etc/smb.conf -a "$PROBE_USER"
 

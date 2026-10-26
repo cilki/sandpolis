@@ -186,6 +186,13 @@ probe: (
 ),
 ```
 
+The SMB backend also has an automated check against this container, ignored by
+default (`SMB_TEST_PORT=4445` when the port was moved):
+
+```shell
+cargo test -p sandpolis-probe --features server smb_against_test_container -- --ignored
+```
+
 Then start a server + client and open the layer that drives each protocol:
 **Desktop** for VNC/RDP (expanding a probe node opens its stream), **Filesystem**
 for NFS/SMB, **Shell** for SSH, and the **Probe** layer to see which protocols

@@ -41,8 +41,8 @@ mod server {
     use ironrdp_connector::{ClientConnector, Config, Credentials, DesktopSize};
     use ironrdp_graphics::image_processing::PixelFormat;
     use ironrdp_input::{Database, MouseButton, MousePosition, Operation};
-    use ironrdp_pdu::gcc::KeyboardType;
-    use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
+    use ironrdp_pdu::gcc::{ConnectionType, KeyboardType};
+    use ironrdp_pdu::rdp::capability_sets::{MajorPlatformType, RailSupportLevel};
     use ironrdp_pdu::rdp::client_info::{OptionalSystemTime, PerformanceFlags, TimezoneInfo};
     use ironrdp_session::image::DecodedImage;
     use ironrdp_session::{ActiveStageBuilder, ActiveStageOutput};
@@ -164,7 +164,7 @@ mod server {
             domain: config.domain.clone(),
             client_build: 0,
             client_name: "sandpolis".to_owned(),
-            keyboard_type: KeyboardType::IbmEnhanced,
+            keyboard_type: KeyboardType::IBM_ENHANCED,
             keyboard_subtype: 0,
             keyboard_functional_keys_count: 12,
             keyboard_layout: 0,
@@ -194,6 +194,18 @@ mod server {
             enable_server_pointer: false,
             pointer_software_rendering: true,
             multitransport_flags: None,
+            // A single monitor at `desktop_size`.
+            monitor_layout: None,
+            // Legacy RC4 "Standard RDP Security" stays off: TLS or nothing.
+            enable_standard_rdp_security: false,
+            connection_type: ConnectionType::Lan,
+            // Full desktops only; RemoteApp windows have no place in the
+            // desktop subsystem's single-surface frame format.
+            remote_application_mode: false,
+            rail_support_level: RailSupportLevel::empty(),
+            enable_audio_capture: false,
+            // No EGFX dynamic channel is registered, so don't advertise it.
+            support_dyn_vc_gfx_protocol: false,
         }
     }
 
@@ -243,7 +255,11 @@ mod server {
             None,
         )
         .await
-        .map_err(|e| anyhow::anyhow!("finalize RDP connection: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("finalize RDP connection: {e}"))?
+        // A server redirection (e.g. a connection broker handing off to a
+        // session host) surfaces as an error; following it is not yet supported.
+        .into_connected()
+        .map_err(|e| anyhow::anyhow!("RDP server redirected the connection: {e}"))?;
 
         let (width, height) = (result.desktop_size.width, result.desktop_size.height);
         if width == 0 || height == 0 {
@@ -292,7 +308,12 @@ mod server {
                         // A closed connection is a normal end of stream.
                         Err(_) => break,
                     };
-                    let outputs = active_stage.process(&mut image, action, &payload)?;
+                    let outputs = active_stage.process(
+                        &mut image,
+                        action,
+                        &payload,
+                        framed.last_read_at(),
+                    )?;
                     let mut dirty = false;
                     for output in outputs {
                         match output {

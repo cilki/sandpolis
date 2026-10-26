@@ -340,9 +340,8 @@ cd android && ./gradlew assembleDebug
   - Driven from the desktop layer, like VNC
   - First cut negotiates TLS security; hosts requiring NLA/CredSSP need
     `enable_credssp` turned on and the sspi CredSSP path exercised
-  - `ironrdp-connector` is vendored under `vendor/` with a one-line picky bump
-    and a `buffer_len` fixup so it resolves against the pinned `sspi` rev; drop
-    it once IronRDP releases against picky rc.26
+  - A server redirection (connection broker) fails the stream; following it
+    means reconnecting to the target in `ConnectionOutcome::Redirected`
 - RTSP probe (`rtsp/`)
   - Button on expanded node panel to maximize the video stream
   - Driven from the desktop layer?
@@ -354,17 +353,30 @@ cd android && ./gradlew assembleDebug
   - Drive from inventory layer?
 - ARP probe (`arp/`) — verify completeness
 - SMB probe (`smb.rs`) — `SmbFs` behind `crate::filesystem`, mirroring `NfsFs`.
-  Its dependencies are pinned in two places, both worth understanding before
-  touching them:
-  - `smb` comes from a fork rev (`chdalski/fork-smb-rs`) that moves the crate
-    onto `sspi 0.21`, so its crypto stack unifies with `russh`'s. Keep the
-    `kerberos` feature off: it routes NTLM through SPNEGO, which Samba rejects,
-    and the fork's other commit depends on that path being unused.
-  - `[patch.crates-io] sspi` points at an upstream commit ahead of the 0.21.4
-    release. Published 0.21.x pins exact release candidates of
-    `curve25519-dalek`/`ed25519-dalek`/`p256` that no published `russh` agrees
-    with — cargo cannot resolve both. Those pins are macOS/iOS-only and upstream
-    has dropped them; delete the patch once 0.21.4 is out.
+  Its dependencies are worth understanding before touching them:
+  - `smb`/`smb-rpc` are the published 0.12.1 from crates.io. NTLM goes through
+    SPNEGO; `kerberos` stays off because probes are addressed by IP, with no
+    KDC or SPN. `smb_against_test_container` (an `#[ignore]` test in `smb.rs`)
+    covers auth and list/stat/read against the test container's Samba.
+  - `smb` pins `sspi =0.21.3`, and the published 0.21.3 pins exact release
+    candidates of `curve25519-dalek`/`ed25519-dalek`/`p256` (macOS/iOS-only,
+    but cargo resolves them everywhere) that no published `russh` agrees with.
+    `[patch.crates-io] sspi` points at the last upstream sspi-rs commit still
+    versioned 0.21.3, which has dropped those pins. Delete the patch once `smb`
+    moves to `sspi 0.22+` (afiffon/smb-rs#181, approved but unmerged). Until
+    then the tree carries two sspi versions: the patched 0.21.3 for `smb` and
+    0.23 from crates.io for the IronRDP crates.
+  - 0.12.1 can hang a directory listing on a multi-threaded runtime (a lost
+    `Notify` wakeup in `QueryDirectoryStream`); upstream fixed it in
+    `f4524d0` but hasn't released it yet. Take the next release.
+  - Share enumeration (`enumerate`, MS-SRVS over IPC$) only works against
+    Windows: `smb` speaks DCE/RPC over NDR64 only, and Samba rejects that
+    transfer syntax at bind time. Fixing it means adding NDR (32-bit) support
+    upstream, or at least accepting a partial BindAck.
+  - `smb` builds on `maybe-async` in async mode. Nothing else in the tree may
+    enable `maybe-async/is_sync` (cargo unifies it across the whole build and
+    smb stops compiling) — that's why the ARP sweep in `scan.rs` is hand-rolled
+    on `pnet` rather than using an ARP crate.
 - Node panels on probes in probe layer just show what protocols are supported -
   to interact with probes, you use a more specific layer like desktop,
   filesystem, etc.
