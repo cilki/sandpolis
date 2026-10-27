@@ -189,11 +189,13 @@ impl Writer {
     }
 }
 
+// `LengthDelimitedCodec` encodes both `Bytes` and `&[u8]`, so the write half
+// is a `Sink` of either; the three item-less methods have to say which.
 impl Sink<Message> for Writer {
     type Error = io::Error;
 
     fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Pin::new(&mut self.0).poll_ready(cx)
+        Sink::<Bytes>::poll_ready(Pin::new(&mut self.0), cx)
     }
 
     fn start_send(mut self: Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
@@ -201,11 +203,11 @@ impl Sink<Message> for Writer {
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Pin::new(&mut self.0).poll_flush(cx)
+        Sink::<Bytes>::poll_flush(Pin::new(&mut self.0), cx)
     }
 
     fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Pin::new(&mut self.0).poll_close(cx)
+        Sink::<Bytes>::poll_close(Pin::new(&mut self.0), cx)
     }
 }
 

@@ -19,7 +19,7 @@ native_model = { workspace = true }
 russh = { workspace = true, optional = true }
 serde_cbor = { workspace = true, optional = true }
 tracing = { workspace = true }
-dirs = { version = "6", optional = true }
+dirs = { version = "7", optional = true }
 bevy = { workspace = true, optional = true }
 sandpolis-client = { path = "../sandpolis-client", version = "0.0.1", optional = true }
 sandpolis-instance = { path = "../sandpolis-instance", version = "0.0.1" }

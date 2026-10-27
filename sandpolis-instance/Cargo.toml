@@ -26,14 +26,14 @@ os_info = { workspace = true }
 pem = { workspace = true }
 rand = { workspace = true }
 regex = { workspace = true }
-rcgen = { version = "0.14.8", optional = true, features = [
+rcgen = { version = "0.14.10", optional = true, features = [
   "crypto",
   "pem",
   "x509-parser",
 ] }
 reqwest = { workspace = true, optional = true }
 ron = { workspace = true }
-rustls-pki-types = { version = "1.10.1" }
+rustls-pki-types = { version = "1.15.1" }
 rustls = { workspace = true }
 sandpolis-macros = { path = "../sandpolis-macros", version = "0.0.1" }
 serde_cbor = { workspace = true }
@@ -65,7 +65,7 @@ jni = { version = "0.22.4", optional = true }
 ndk-context = { version = "0.1", optional = true }
 
 [dev-dependencies]
-test-log = { version = "0.2.18", features = ["trace"] }
+test-log = { version = "0.2.21", features = ["trace"] }
 
 # `test-util` is not part of tokio's `full`, and the socket tests need a paused
 # clock to reach the keepalive deadline without waiting for it.
@@ -73,7 +73,7 @@ tokio = { workspace = true, features = ["test-util"] }
 criterion = { version = "0.8.2", features = ["html_reports", "async_tokio"] }
 
 # Used to test certificate authentication with a different backend
-openssl = "0.10.71"
+openssl = "0.10.81"
 
 
 [[bench]]

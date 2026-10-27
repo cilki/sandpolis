@@ -19,7 +19,7 @@ sandpolis-probe = { path = "../sandpolis-probe", version = "0.0.1", optional = t
 sandpolis-macros = { path = "../sandpolis-macros", version = "0.0.1" }
 serde = { workspace = true }
 serde_cbor = { workspace = true, optional = true }
-sysinfo = { version = "0.39.3", optional = true }
+sysinfo = { version = "0.39.6", optional = true }
 tokio = { workspace = true, optional = true }
 tracing = { workspace = true }
 
@@ -29,7 +29,7 @@ bevy = { workspace = true, optional = true }
 # Terminal (TUI/CLI) dependencies, excluded on Android
 [target.'cfg(not(target_os = "android"))'.dependencies]
 ratatui = { workspace = true, optional = true }
-color-eyre = { version = "0.6.3", optional = true }
+color-eyre = { version = "0.6.5", optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

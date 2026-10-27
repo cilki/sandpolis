@@ -1,12 +1,7 @@
 use crate::user::ClientAuthToken;
 use crate::user::UserName;
 #[cfg(any(feature = "client", feature = "server"))]
-use argon2::{
-    Argon2,
-    password_hash::{PasswordHasher, SaltString},
-};
-#[cfg(any(feature = "client", feature = "server"))]
-use base64::prelude::*;
+use argon2::{Argon2, password_hash::PasswordHasher};
 use native_db::ToKey;
 use native_model::Model;
 use sandpolis_instance::ClusterId;
@@ -81,13 +76,10 @@ impl LoginPassword {
     /// initial hashes.
     #[cfg(any(feature = "client", feature = "server"))]
     pub fn new(cluster_id: ClusterId, plaintext: &str) -> Self {
+        // The raw cluster id is the salt; the PHC string base64-encodes it.
         let h = Argon2::default()
-            .hash_password(
-                plaintext.as_bytes(),
-                &SaltString::from_b64(&BASE64_STANDARD_NO_PAD.encode(cluster_id.as_bytes()))
-                    .expect("Cluster ID is always base64-able"),
-            )
-            .expect("Salt is base64")
+            .hash_password_with_salt(plaintext.as_bytes(), &cluster_id.as_bytes())
+            .expect("A cluster ID is a valid salt length")
             .to_string();
 
         Self(h)
@@ -95,6 +87,23 @@ impl LoginPassword {
 
     #[cfg(feature = "client")]
     pub fn strength(&self) {}
+}
+
+#[cfg(all(test, any(feature = "client", feature = "server")))]
+mod test_login_password {
+    use super::*;
+
+    /// The pre-hash is what the server stores a derivative of, so a change to
+    /// how it's computed (a bumped `argon2`, a different salt encoding) would
+    /// lock every existing user out. Pinned against the output of argon2 0.5.
+    #[test]
+    fn prehash_is_stable() {
+        let cluster_id: ClusterId = "01930000-0000-7000-8000-000000000001".parse().unwrap();
+        assert_eq!(
+            LoginPassword::new(cluster_id, "hunter42").0,
+            "$argon2id$v=19$m=19456,t=2,p=1$AQAAAAAAAIAAcAAAAACTAQ$tkgzd6uBvZWNOE3MMU+UPiVDYp+S1NUzf6gQqyW2sgs"
+        );
+    }
 }
 
 #[data]

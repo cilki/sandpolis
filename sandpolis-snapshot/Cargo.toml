@@ -6,7 +6,7 @@ name = "sandpolis-snapshot"
 version = "0.0.1"
 
 [build-dependencies]
-slint-build = { version = "1.17", optional = true }
+slint-build = { version = "1.18", optional = true }
 
 [dependencies]
 anyhow = { workspace = true }
@@ -22,7 +22,7 @@ clap = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 zstd = { workspace = true, optional = true }
 bevy = { workspace = true, optional = true }
-slint = { version = "1.17", optional = true, default-features = false, features = [
+slint = { version = "1.18", optional = true, default-features = false, features = [
   "std",
   "compat-1-2",
   "backend-winit",
@@ -39,7 +39,7 @@ sandpolis-inventory = { path = "../sandpolis-inventory", version = "0.0.1", opti
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true }
-test-log = { version = "0.2.18", features = ["trace"] }
+test-log = { version = "0.2.21", features = ["trace"] }
 
 [features]
 agent = [
