@@ -212,6 +212,11 @@ pub struct StreamRegistry {
     /// a server's inbound client connections — the server installs a gate built
     /// from the logged-in user's permissions.
     gate: RwLock<Option<Arc<dyn Fn(u32) -> bool + Send + Sync>>>,
+
+    /// Told about every [`close`](Self::close), so the transport can finish the
+    /// stream on the wire and the peer learns it is over. Unbounded because
+    /// `close` is synchronous and a close must never be lost.
+    on_close: RwLock<Option<tokio::sync::mpsc::UnboundedSender<StreamId>>>,
 }
 
 impl StreamRegistry {
@@ -223,6 +228,7 @@ impl StreamRegistry {
             relay: RwLock::new(None),
             traffic: RwLock::new(HashMap::new()),
             gate: RwLock::new(None),
+            on_close: RwLock::new(None),
         }
     }
 
@@ -231,6 +237,12 @@ impl StreamRegistry {
     /// approves their type tag.
     pub fn set_gate(&self, gate: Arc<dyn Fn(u32) -> bool + Send + Sync>) {
         *self.gate.write().unwrap() = Some(gate);
+    }
+
+    /// Have every [`close`](Self::close) reported on `hook`. The transport
+    /// installs this so a closed stream is finished on the wire too.
+    pub fn set_close_hook(&self, hook: tokio::sync::mpsc::UnboundedSender<StreamId>) {
+        *self.on_close.write().unwrap() = Some(hook);
     }
 
     /// Account `bytes` sent for `stream_id`.
@@ -436,12 +448,40 @@ impl StreamRegistry {
         (id, msg_tx)
     }
 
-    /// Remove a stream from the registry and drop any relay route for it.
+    /// Remove a stream from the registry, finish it on the wire, and drop any
+    /// relay route for it.
+    ///
+    /// Closing travels the way the stream was opened: on a server, a stream
+    /// that was relayed onward is closed on the connection it was relayed to,
+    /// so the responder at the far end is dropped when the requester lets go
+    /// rather than living until that connection does. Nothing travels the
+    /// other way — a responder finishing its side is just that side.
     pub fn close(&self, stream_id: StreamId) {
         self.streams.write().unwrap().remove(&stream_id);
         self.traffic.write().unwrap().remove(&stream_id);
-        if let Some(relay) = self.relay.read().unwrap().clone().and_then(|r| r.upgrade()) {
-            relay.routes.lock().unwrap().remove(&stream_id);
+
+        if let Some(hook) = self.on_close.read().unwrap().as_ref() {
+            let _ = hook.send(stream_id);
+        }
+
+        let Some(relay) = self.relay.read().unwrap().clone().and_then(|r| r.upgrade()) else {
+            return;
+        };
+        relay.routes.lock().unwrap().remove(&stream_id);
+
+        // Taken out of the table before the next hop is closed, so the close
+        // arriving back here from that connection's own cleanup finds nothing
+        // to forward and stops.
+        let next = relay
+            .forward
+            .lock()
+            .unwrap()
+            .remove(&stream_id)
+            .and_then(|next| next.upgrade());
+        if let Some(next) = next
+            && !std::ptr::eq(Arc::as_ptr(&next.streams), self)
+        {
+            next.streams.close(stream_id);
         }
     }
 }
@@ -453,6 +493,10 @@ pub struct Relay {
     connections: Arc<RwLock<Vec<Arc<super::InstanceConnection>>>>,
     /// stream id -> the origin connection's outbound sender (for responses).
     routes: Mutex<HashMap<StreamId, Sender<StreamMessage>>>,
+    /// stream id -> the connection it was last forwarded to, so closing the
+    /// stream can follow it there. Weak, like `reachable`: a connection that
+    /// has gone took its streams with it.
+    forward: Mutex<HashMap<StreamId, std::sync::Weak<super::InstanceConnection>>>,
 
     /// Instances reachable *through* a peer rather than directly, learned from
     /// reachability advertisements. Held weakly so a dropped connection stops
@@ -470,6 +514,7 @@ impl Relay {
         Self {
             connections,
             routes: Mutex::new(HashMap::new()),
+            forward: Mutex::new(HashMap::new()),
             reachable: RwLock::new(HashMap::new()),
             upstream: RwLock::new(None),
         }
@@ -615,6 +660,10 @@ impl Relay {
                 .lock()
                 .unwrap()
                 .insert(message.stream_id, origin_tx.clone());
+            self.forward
+                .lock()
+                .unwrap()
+                .insert(message.stream_id, Arc::downgrade(&conn));
             conn.streams
                 .send_raw(StreamMessage {
                     stream_id: message.stream_id,

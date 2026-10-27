@@ -4,25 +4,27 @@
 //! [`CONNECT_PATH`] and says who it is in the request headers; the server
 //! accepts, works out the realm from the certificate the handshake verified,
 //! and then either closes the connection with one of the [`close`] codes or
-//! opens the single bidirectional stream every [`StreamMessage`] of the
-//! attachment is multiplexed over. That stream is what [`super::socket`]
-//! drives, on both sides, and this module is only the framing it speaks:
-//! `[kind: u8][payload]` behind a four byte length prefix, since a QUIC stream
-//! is bytes rather than messages.
+//! opens the session's *control stream* — a bidirectional stream that carries
+//! only its introduction and the keepalive — which is what tells the dialer
+//! it is in.
 //!
-//! Multiplexing everything on one stream keeps the relay, the stream registry
-//! and every requester/responder exactly as they were; giving each Sandpolis
-//! stream its own QUIC stream (which is what would end head-of-line blocking
-//! between them) is a change to those, not to this.
+//! Every Sandpolis stream then gets a QUIC stream of its own: the first
+//! [`StreamMessage`] sent for a [`StreamId`] opens one, and every message of
+//! that stream, in both directions, travels on it. Loss or backlog on one
+//! stream therefore never delays another, which is what the transport is for;
+//! and finishing the QUIC stream is how a peer learns the stream is over. The
+//! mapping is [`super::socket`]'s job; this module is the framing both kinds
+//! of stream speak: `[kind: u8][payload]` behind a four byte length prefix,
+//! since a QUIC stream is bytes rather than messages.
 //!
+//! [`StreamId`]: super::stream::StreamId
 //! [`StreamMessage`]: super::stream::StreamMessage
 
-use super::socket::{Frame, SocketMessage};
 use crate::InstanceId;
 use crate::realm::RealmCert;
 use crate::realm::url::ServerUrl;
-use anyhow::{Context as _, Result, anyhow, bail};
-use futures_util::{Sink, SinkExt, Stream, StreamExt};
+use anyhow::{Result, anyhow, bail};
+use futures_util::{Sink, Stream, StreamExt};
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -44,6 +46,32 @@ pub const CONNECT_PATH: &str = "/connect";
 ///
 /// [`StreamMessage`]: super::stream::StreamMessage
 const MAX_FRAME_LEN: usize = 64 << 20;
+
+/// How many Sandpolis streams a peer may have open on one session at once,
+/// which is how many QUIC streams it may open. QUIC's default (100) is sized
+/// for request/response traffic; a client browsing an estate holds a sync
+/// stream per subscription plus a stream per open panel, and a server's link
+/// to a local stratum server carries every relayed stream behind it. Opening
+/// past the limit doesn't fail, it waits for one to finish, so this only
+/// needs to be out of the way.
+const MAX_CONCURRENT_STREAMS: u32 = 4096;
+
+/// The QUIC transport settings both ends agree on.
+fn transport_config() -> wtransport::quinn::TransportConfig {
+    let mut config = wtransport::quinn::TransportConfig::default();
+    config
+        // The socket driver's keepalive runs on the control stream, so this is
+        // the backstop beneath it rather than the mechanism, and the two agree.
+        .max_idle_timeout(Some(
+            super::KEEPALIVE_DEADLINE
+                .try_into()
+                .expect("the keepalive deadline is a valid QUIC idle timeout"),
+        ))
+        // Unidirectional streams are left at the default: nothing of ours is
+        // one, but the HTTP/3 session underneath runs on a few.
+        .max_concurrent_bidi_streams(MAX_CONCURRENT_STREAMS.into());
+    config
+}
 
 /// The kind byte that leads every frame.
 mod kind {
@@ -76,7 +104,10 @@ pub mod close {
     pub const CONFLICT: VarInt = VarInt::from_u32(3);
 }
 
-/// One frame on the session's stream, as the socket driver sees it.
+/// One frame on a session's stream, as the socket driver sees it.
+///
+/// A stream's QUIC stream only ever carries [`Binary`](Self::Binary); the
+/// control stream carries the rest.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Message {
     /// Application data: one cbor-encoded `StreamMessage`.
@@ -121,77 +152,100 @@ impl Message {
     }
 }
 
-impl SocketMessage for Message {
-    fn binary(payload: Vec<u8>) -> Self {
-        Self::Binary(payload.into())
-    }
+/// The frame codec every stream of a session speaks.
+fn codec() -> LengthDelimitedCodec {
+    LengthDelimitedCodec::builder()
+        .length_field_length(4)
+        .max_frame_length(MAX_FRAME_LEN)
+        .new_codec()
+}
 
-    fn ping(payload: Vec<u8>) -> Self {
-        Self::Ping(payload.into())
-    }
+/// The receiving half of a QUIC stream, framed into [`Message`]s.
+pub struct Reader(FramedRead<RecvStream, LengthDelimitedCodec>);
 
-    fn pong(payload: Vec<u8>) -> Self {
-        Self::Pong(payload.into())
-    }
-
-    fn frame(&self) -> Frame<'_> {
-        match self {
-            Self::Binary(payload) => Frame::Binary(payload),
-            Self::Ping(payload) => Frame::Ping(payload),
-            Self::Pong(payload) => Frame::Pong(payload),
-            Self::Hello(_) | Self::Unknown => Frame::Other,
-        }
+impl Reader {
+    pub fn new(rx: RecvStream) -> Self {
+        Self(FramedRead::new(rx, codec()))
     }
 }
 
-/// The session's bidirectional stream, framed into [`Message`]s.
-pub struct Socket {
-    rx: FramedRead<RecvStream, LengthDelimitedCodec>,
-    tx: FramedWrite<SendStream, LengthDelimitedCodec>,
-}
-
-impl Socket {
-    pub fn new((tx, rx): (SendStream, RecvStream)) -> Self {
-        let codec = || {
-            LengthDelimitedCodec::builder()
-                .length_field_length(4)
-                .max_frame_length(MAX_FRAME_LEN)
-                .new_codec()
-        };
-        Self {
-            rx: FramedRead::new(rx, codec()),
-            tx: FramedWrite::new(tx, codec()),
-        }
-    }
-}
-
-impl Stream for Socket {
+impl Stream for Reader {
     type Item = Result<Message, io::Error>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        Pin::new(&mut self.rx)
+        Pin::new(&mut self.0)
             .poll_next(cx)
             .map(|next| next.map(|frame| frame.map(Message::decode)))
     }
 }
 
-impl Sink<Message> for Socket {
+/// The sending half of a QUIC stream, framed into [`Message`]s. Closing it
+/// finishes the QUIC stream, which is how the peer learns there is no more.
+pub struct Writer(FramedWrite<SendStream, LengthDelimitedCodec>);
+
+impl Writer {
+    pub fn new(tx: SendStream) -> Self {
+        Self(FramedWrite::new(tx, codec()))
+    }
+}
+
+impl Sink<Message> for Writer {
     type Error = io::Error;
 
     fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Pin::new(&mut self.tx).poll_ready(cx)
+        Pin::new(&mut self.0).poll_ready(cx)
     }
 
     fn start_send(mut self: Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
-        Pin::new(&mut self.tx).start_send(item.encode())
+        Pin::new(&mut self.0).start_send(item.encode())
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Pin::new(&mut self.tx).poll_flush(cx)
+        Pin::new(&mut self.0).poll_flush(cx)
     }
 
     fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Pin::new(&mut self.tx).poll_close(cx)
+        Pin::new(&mut self.0).poll_close(cx)
+    }
+}
+
+/// A bidirectional QUIC stream, framed into [`Message`]s.
+pub struct Socket {
+    rx: Reader,
+    tx: Writer,
+}
+
+impl Socket {
+    pub fn new((tx, rx): (SendStream, RecvStream)) -> Self {
+        Self {
+            rx: Reader::new(rx),
+            tx: Writer::new(tx),
+        }
+    }
+
+    pub fn split(self) -> (Writer, Reader) {
+        (self.tx, self.rx)
+    }
+}
+
+/// An attachment that is up: the QUIC connection and its control stream.
+///
+/// The control stream is the one the server opened to say yes. The keepalive
+/// runs on it, and nothing else does; it is at the highest priority so a
+/// backlog on a data stream can't starve the pings the peer's deadline is
+/// waiting on.
+pub struct Session {
+    pub connection: Connection,
+    pub control: Socket,
+}
+
+impl Session {
+    fn new(connection: Connection, (tx, rx): (SendStream, RecvStream)) -> Self {
+        tx.set_priority(i32::MAX);
+        Self {
+            connection,
+            control: Socket::new((tx, rx)),
+        }
     }
 }
 
@@ -206,30 +260,38 @@ struct Hello {
 }
 
 /// Accept-side half of bringing a session up, once the server has decided the
-/// peer may attach: open the stream and introduce ourselves on it.
+/// peer may attach: open the control stream and introduce ourselves on it.
 #[cfg(feature = "server")]
-pub async fn open(connection: &Connection, instance: InstanceId) -> Result<Socket> {
+pub async fn open(connection: Connection, instance: InstanceId) -> Result<Session> {
+    use anyhow::Context as _;
+    use futures_util::SinkExt;
+
     let stream = connection
         .open_bi()
         .await
-        .context("Opening the session stream")?
+        .context("Opening the control stream")?
         .await
-        .context("Opening the session stream")?;
+        .context("Opening the control stream")?;
 
-    let mut socket = Socket::new(stream);
+    let mut session = Session::new(connection, stream);
     let hello = serde_cbor::to_vec(&Hello { instance })?;
-    socket
+    session
+        .control
+        .tx
         .send(Message::Hello(hello.into()))
         .await
-        .context("Introducing ourselves on the session stream")?;
-    Ok(socket)
+        .context("Introducing ourselves on the control stream")?;
+    Ok(session)
 }
 
-/// Dial-side half: wait for the server to open the stream, which it only does
-/// after it has decided we may attach. Resolves to the server's instance id
-/// and the stream; a server that decided otherwise closed the connection
-/// instead, which surfaces here as [`Refused`].
-pub async fn accept(connection: &Connection) -> Result<(InstanceId, Socket)> {
+/// Dial-side half: wait for the server to open the control stream, which it
+/// only does after it has decided we may attach. Resolves to the server's
+/// instance id and the session; a server that decided otherwise closed the
+/// connection instead, which surfaces here as [`Refused`].
+///
+/// The control stream is the first the server opens, and QUIC hands a peer's
+/// streams over in the order they were opened, so the first accepted is it.
+pub async fn accept(connection: Connection) -> Result<(InstanceId, Session)> {
     let stream = match connection.accept_bi().await {
         Ok(stream) => stream,
         Err(wtransport::error::ConnectionError::ApplicationClosed(close)) => {
@@ -239,18 +301,18 @@ pub async fn accept(connection: &Connection) -> Result<(InstanceId, Socket)> {
             }
             .into());
         }
-        Err(e) => return Err(anyhow!(e).context("Waiting for the session stream")),
+        Err(e) => return Err(anyhow!(e).context("Waiting for the control stream")),
     };
 
-    let mut socket = Socket::new(stream);
-    let hello = match socket.next().await {
+    let mut session = Session::new(connection, stream);
+    let hello = match session.control.rx.next().await {
         Some(Ok(Message::Hello(payload))) => serde_cbor::from_slice::<Hello>(&payload)?,
         Some(Ok(other)) => bail!("Expected the server's hello, got {other:?}"),
         Some(Err(e)) => return Err(anyhow!(e).context("Reading the server's hello")),
-        None => bail!("Session stream closed before the server's hello"),
+        None => bail!("Control stream closed before the server's hello"),
     };
 
-    Ok((hello.instance, socket))
+    Ok((hello.instance, session))
 }
 
 /// The server accepted the session and then closed it, with one of the
@@ -284,11 +346,7 @@ pub fn server_endpoint(
 
     let config = wtransport::ServerConfig::builder()
         .with_bind_address(address)
-        .with_custom_tls(tls)
-        // The socket driver's keepalive runs inside the stream, so this is the
-        // backstop beneath it rather than the mechanism, and the two agree.
-        .max_idle_timeout(Some(super::KEEPALIVE_DEADLINE))
-        .map_err(|e| anyhow!("{e}"))?
+        .with_custom_tls_and_transport(tls, transport_config())
         .build();
 
     Ok(Endpoint::server(config)?)
@@ -347,9 +405,7 @@ impl Dialer {
 
         let config = ClientConfig::builder()
             .with_bind_address(bind)
-            .with_custom_tls(tls)
-            .max_idle_timeout(Some(super::KEEPALIVE_DEADLINE))
-            .map_err(|e| anyhow!("{e}"))?
+            .with_custom_tls_and_transport(tls, transport_config())
             .dns_resolver(RealmResolver {
                 name: format!("{server_name}:{}", url.port),
                 address,

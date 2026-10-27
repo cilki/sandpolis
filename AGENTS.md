@@ -149,12 +149,15 @@ enrollment at `/realm/server-cert`. WebTransport (QUIC) over UDP takes the
 _attachment_: an instance requests a session on `/connect`, names itself in the
 request headers (`x-instance-id`, `x-stratum`, the bearer token, a polling
 schedule), and the server, having read the realm off the certificate chain the
-handshake verified, either opens the session's single bidirectional stream or
-closes the connection with a code (`network::webtransport::close`) saying why.
-Every `StreamMessage` of the attachment is multiplexed over that one stream,
-which is what the relay and the stream registry already expected; mapping each
-Sandpolis stream to its own QUIC stream, and desktop frames to datagrams, are
-changes to those rather than to the transport. Both listeners share one `rustls`
+handshake verified, either opens the session's _control stream_ (keepalive
+only) or closes the connection with a code (`network::webtransport::close`)
+saying why. Every Sandpolis stream then runs on a QUIC stream of its own: the
+first `StreamMessage` for a `StreamId` opens one, replies come back on it, and
+`StreamRegistry::close` finishes it — which is how the peer learns to drop its
+responder, and how a server follows the close to the connection it relayed the
+stream to. So one stream's backlog never delays another on the wire, and the
+relay and the stream registry still only see `StreamMessage`s. Desktop frames
+over datagrams remain to be done. Both listeners share one `rustls`
 configuration — the same realm CAs verify peers, the same per-realm server
 certificates are presented by SNI — so a realm cert attaches an instance to
 either. A deployment therefore needs UDP open as well as TCP.

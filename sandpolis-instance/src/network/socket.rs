@@ -1,87 +1,122 @@
-//! The socket driver that backs every [`InstanceConnection`].
+//! The session driver that backs every [`InstanceConnection`].
 //!
-//! Both ends of a connection run the same loop: keepalive out, keepalive in,
-//! outbound [`StreamMessage`]s encoded as binary frames, inbound binary frames
-//! decoded and dispatched. It is written against [`SocketMessage`] rather than
-//! any one transport's frames, so the loop (and its tests) stay the same
-//! whatever carries them; today that is the WebTransport session stream of
-//! [`super::webtransport`].
+//! Both ends of an attachment run the same thing: one task owning the QUIC
+//! connection and its control stream (keepalive out, keepalive in), and then
+//! a QUIC stream per Sandpolis stream. The first outbound [`StreamMessage`]
+//! for a [`StreamId`] opens one and hands it to a writer task; every QUIC
+//! stream the peer opens gets a reader task, which learns the stream id from
+//! the first message on it and keeps the send half so replies go back the
+//! same way. A stream is over on the wire when its QUIC stream is finished,
+//! which is what [`StreamRegistry::close`] does here and what a reader seeing
+//! the peer's finish turns back into a `close`.
+//!
+//! Readers dispatch straight into the registry, so one stream's handler being
+//! slow holds up that stream and nothing else. Outbound, the driver hands
+//! each message to its stream's writer and only waits when that writer's
+//! queue is full — a stream with [`WRITER_QUEUE`] frames backed up behind
+//! QUIC flow control does stall the others until it drains, which is the one
+//! place head-of-line blocking survives.
+//!
+//! [`StreamMessage`]: super::stream::StreamMessage
 
-use super::{
-    ConnectionData, InstanceConnection, RegisterResponders,
-    stream::{StreamMessage, StreamRegistry},
-};
+use super::stream::{StreamId, StreamMessage, StreamRegistry};
+use super::webtransport::{Message, Reader, Session, Writer};
+use super::{ConnectionData, InstanceConnection, RegisterResponders};
 use crate::ClusterId;
 use crate::database::Resident;
 use crate::realm::RealmName;
-use futures_util::{SinkExt, StreamExt, sink::Sink, stream::Stream};
-use std::sync::Arc;
+use anyhow::{Context as _, Result};
+use futures_util::{SinkExt, StreamExt};
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::sync::{Arc, Mutex};
+use tokio::sync::mpsc;
+use tokio_util::bytes::Bytes;
 use tokio_util::sync::CancellationToken;
+use tracing::{debug, trace, warn};
+use wtransport::{Connection, RecvStream, SendStream};
 
-/// One incoming frame, as the socket driver sees it.
-pub enum Frame<'a> {
-    /// Application data: one cbor-encoded [`StreamMessage`].
-    Binary(&'a [u8]),
-    Ping(&'a [u8]),
-    Pong(&'a [u8]),
-    /// Text, close, or anything else the driver takes no action on.
-    Other,
-}
+/// How many frames one stream's writer may have queued before the driver
+/// waits for it to drain.
+const WRITER_QUEUE: usize = 32;
 
-/// What the socket driver needs of a transport's message type.
-///
-/// Implemented for [`super::webtransport::Message`], and for the test
-/// double below.
-pub trait SocketMessage: Send + 'static {
-    fn binary(payload: Vec<u8>) -> Self;
-    fn ping(payload: Vec<u8>) -> Self;
-    fn pong(payload: Vec<u8>) -> Self;
+/// The writers for every QUIC stream this side sends on, by Sandpolis stream.
+/// Dropping an entry closes its writer's queue, which finishes the stream.
+type Writers = Arc<Mutex<HashMap<StreamId, mpsc::Sender<Bytes>>>>;
 
-    /// Classify an incoming message, borrowing its payload.
-    fn frame(&self) -> Frame<'_>;
+/// What the reader and writer tasks share with the driver.
+#[derive(Clone)]
+struct Shared {
+    connection: Connection,
+    streams: Arc<StreamRegistry>,
+    writers: Writers,
+    cancel: CancellationToken,
 }
 
 impl InstanceConnection {
-    /// Wrap a socket with an `InstanceConnection`.
+    /// Drive a session as an `InstanceConnection`.
     ///
     /// The `handlers` slice contains subsystems that will register their stream
     /// responders with the connection's stream registry.
     ///
     /// Works the same on either side of a connection: whoever accepted the
-    /// socket and whoever dialed it run this identical loop, so streams are
+    /// session and whoever dialed it run this identical loop, so streams are
     /// symmetric across the connection.
-    pub fn socket<M, S, E>(
-        socket: S,
+    pub fn session(
+        session: Session,
         data: Resident<ConnectionData>,
         realm: RealmName,
         cluster_id: ClusterId,
         handlers: &[&dyn RegisterResponders],
-    ) -> Arc<Self>
-    where
-        M: SocketMessage,
-        E: Send + 'static,
-        S: Stream<Item = Result<M, E>> + Sink<M> + Send + 'static,
-    {
+    ) -> Arc<Self> {
         let cancel = CancellationToken::new();
-        let cancel_clone = cancel.clone();
 
         // Channel for the StreamRegistry to send outgoing StreamMessages
-        let (stream_tx, mut stream_rx) = tokio::sync::mpsc::channel::<StreamMessage>(32);
+        let (stream_tx, mut stream_rx) = mpsc::channel::<StreamMessage>(32);
         let streams = Arc::new(StreamRegistry::new(stream_tx));
-        let streams_clone = streams.clone();
+
+        // And to say which streams it has closed, so they can be finished.
+        let (close_tx, mut close_rx) = mpsc::unbounded_channel::<StreamId>();
+        streams.set_close_hook(close_tx);
 
         // Register responders from all handlers
         for handler in handlers {
             handler.register_responders(&streams);
         }
 
+        let shared = Shared {
+            connection: session.connection,
+            streams: streams.clone(),
+            writers: Default::default(),
+            cancel: cancel.clone(),
+        };
+
         // The socket task times its own keepalive, so it writes the connection
         // row the same as the `InstanceConnection` it belongs to.
         let mut latency = super::LatencyProbe::new(data.clone());
 
-        // Spawn task that owns the actual socket
+        // Every stream the peer opens gets a reader.
+        tokio::spawn({
+            let shared = shared.clone();
+            async move {
+                loop {
+                    let accepted = tokio::select! {
+                        _ = shared.cancel.cancelled() => break,
+                        accepted = shared.connection.accept_bi() => accepted,
+                    };
+                    match accepted {
+                        Ok((send, recv)) => spawn_reader(&shared, recv, Some(send), None),
+                        // The connection is over; the driver notices the same
+                        // on the control stream and winds everything up.
+                        Err(_) => break,
+                    }
+                }
+            }
+        });
+
+        // Spawn the driver, which owns the control stream and the connection.
         tokio::spawn(async move {
-            let (mut ws_tx, mut ws_rx) = socket.split();
+            let (mut control_tx, mut control_rx) = session.control.split();
 
             let mut keepalive = tokio::time::interval(super::KEEPALIVE_INTERVAL);
             keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -89,63 +124,80 @@ impl InstanceConnection {
 
             loop {
                 tokio::select! {
-                    // Prove the peer is still there. Any frame arriving is
-                    // enough to keep this from firing, so the pong answering
-                    // our ping is only one of the ways a peer stays alive.
+                    // Prove the peer is still there. The pong answering our
+                    // ping is what keeps this from firing, so a peer whose
+                    // control stream stops answering is dead however busy its
+                    // data streams are.
                     _ = keepalive.tick() => {
                         if last_frame.elapsed() > super::KEEPALIVE_DEADLINE {
                             break;
                         }
-                        if ws_tx.send(M::ping(latency.ping())).await.is_err() {
+                        if control_tx.send(Message::Ping(latency.ping().into())).await.is_err() {
                             break;
                         }
                     }
-                    // Handle outgoing stream messages
+                    // Handle outgoing stream messages: each goes to its own
+                    // stream's writer, opened on first use.
                     Some(msg) = stream_rx.recv() => {
                         let data = serde_cbor::to_vec(&msg).unwrap();
-                        streams_clone.record_tx(msg.stream_id, data.len() as u64);
-                        if ws_tx.send(M::binary(data)).await.is_err() {
-                            break;
+                        shared.streams.record_tx(msg.stream_id, data.len() as u64);
+
+                        let writer = shared
+                            .writers
+                            .lock()
+                            .unwrap()
+                            .entry(msg.stream_id)
+                            .or_insert_with(|| spawn_writer(&shared, msg.stream_id, None))
+                            .clone();
+                        if writer.send(data.into()).await.is_err() {
+                            // The writer died with its stream (the peer stopped
+                            // it, or the connection is going); the next message
+                            // for this stream opens a fresh one.
+                            let mut writers = shared.writers.lock().unwrap();
+                            if writers.get(&msg.stream_id).is_some_and(|w| w.same_channel(&writer)) {
+                                writers.remove(&msg.stream_id);
+                            }
                         }
                     }
-                    // Handle incoming messages from the socket
-                    msg = ws_rx.next() => {
-                        // Any frame at all, including the pong answering our
-                        // ping, says the peer is alive.
+                    // A stream closed here is finished on the wire: dropping
+                    // its writer's queue ends the writer, which finishes the
+                    // QUIC stream once what's queued has gone out.
+                    Some(stream_id) = close_rx.recv() => {
+                        shared.writers.lock().unwrap().remove(&stream_id);
+                    }
+                    // Handle the control stream
+                    msg = control_rx.next() => {
                         last_frame = tokio::time::Instant::now();
                         match msg {
-                            Some(Ok(msg)) => match msg.frame() {
-                                Frame::Binary(data) => {
-                                    if let Ok(message) = serde_cbor::from_slice::<StreamMessage>(data) {
-                                        streams_clone.record_rx(message.stream_id, data.len() as u64);
-                                        streams_clone.dispatch(message).await;
-                                    }
+                            // The peer's deadline is waiting on this, so it
+                            // goes out ahead of any queued data.
+                            Some(Ok(Message::Ping(payload))) => {
+                                if control_tx.send(Message::Pong(payload)).await.is_err() {
+                                    break;
                                 }
-                                // The peer's deadline is waiting on this, so
-                                // it goes out ahead of any queued data.
-                                Frame::Ping(payload) => {
-                                    let pong = M::pong(payload.to_vec());
-                                    if ws_tx.send(pong).await.is_err() {
-                                        break;
-                                    }
-                                }
-                                Frame::Pong(payload) => latency.pong(payload),
-                                Frame::Other => {}
-                            },
+                            }
+                            Some(Ok(Message::Pong(payload))) => latency.pong(&payload),
+                            Some(Ok(_)) => {}
                             Some(Err(_)) | None => break,
                         }
                     }
                     // Handle cancellation
-                    _ = cancel_clone.cancelled() => {
+                    _ = shared.cancel.cancelled() => {
                         break;
                     }
                 }
             }
 
-            // However the socket ended, the connection is over. Cancelling here
-            // is what tells the rest of the process: every `is_cancelled` check
-            // and every janitor waiting on this token keys off it.
-            cancel_clone.cancel();
+            // However the session ended, the connection is over. Cancelling
+            // here is what tells the rest of the process: every `is_cancelled`
+            // check and every janitor waiting on this token keys off it. The
+            // readers and writers key off it too, and the connection closing
+            // under them.
+            shared.cancel.cancel();
+            shared.writers.lock().unwrap().clear();
+            shared
+                .connection
+                .close(wtransport::VarInt::from_u32(0), b"");
         });
 
         Arc::new(Self {
@@ -159,300 +211,486 @@ impl InstanceConnection {
     }
 }
 
+/// Start the writer for `stream_id` and return its queue.
+///
+/// `send` is the send half of a stream the peer opened; without one, the
+/// writer opens a new QUIC stream first (and starts a reader on the receive
+/// half, since the peer's replies come back on it). The writer runs until its
+/// queue closes — the stream was closed here, or the driver ended — and then
+/// finishes the stream.
+fn spawn_writer(
+    shared: &Shared,
+    stream_id: StreamId,
+    send: Option<SendStream>,
+) -> mpsc::Sender<Bytes> {
+    let (tx, mut rx) = mpsc::channel::<Bytes>(WRITER_QUEUE);
+    let shared = shared.clone();
+    tokio::spawn(async move {
+        let send = match send {
+            Some(send) => send,
+            None => match open(&shared.connection).await {
+                Ok((send, recv)) => {
+                    spawn_reader(&shared, recv, None, Some(stream_id));
+                    send
+                }
+                Err(e) => {
+                    debug!(?stream_id, error = %e, "Failed to open a stream");
+                    return;
+                }
+            },
+        };
+
+        let mut writer = Writer::new(send);
+        while let Some(frame) = rx.recv().await {
+            if let Err(e) = writer.send(Message::Binary(frame)).await {
+                trace!(?stream_id, error = %e, "Stream write failed");
+                return;
+            }
+        }
+        let _ = writer.close().await;
+    });
+    tx
+}
+
+async fn open(connection: &Connection) -> Result<(SendStream, RecvStream)> {
+    Ok(connection
+        .open_bi()
+        .await
+        .context("Opening a stream")?
+        .await
+        .context("Opening a stream")?)
+}
+
+/// Read `recv` until the peer finishes it, dispatching each message.
+///
+/// For a stream the peer opened, `send` is its other half, registered as the
+/// writer for whatever stream id the first message carries so replies go back
+/// on the same QUIC stream. For a stream this side opened, `known` is the id
+/// (the writer already exists), and the peer's messages are expected to match
+/// it. Either way, the peer finishing the stream closes it here.
+fn spawn_reader(
+    shared: &Shared,
+    recv: RecvStream,
+    mut send: Option<SendStream>,
+    known: Option<StreamId>,
+) {
+    let shared = shared.clone();
+    tokio::spawn(async move {
+        let mut reader = Reader::new(recv);
+        let mut stream_id = known;
+
+        loop {
+            let frame = tokio::select! {
+                _ = shared.cancel.cancelled() => break,
+                frame = reader.next() => frame,
+            };
+            let payload = match frame {
+                Some(Ok(Message::Binary(payload))) => payload,
+                // Only data travels on a stream's QUIC stream.
+                Some(Ok(_)) => continue,
+                Some(Err(_)) | None => break,
+            };
+            let Ok(message) = serde_cbor::from_slice::<StreamMessage>(&payload) else {
+                continue;
+            };
+
+            // A QUIC stream carries exactly one Sandpolis stream: the first
+            // message names it, and anything else is a confused peer.
+            match stream_id {
+                None => stream_id = Some(message.stream_id),
+                Some(id) if id != message.stream_id => {
+                    warn!(
+                        expected = ?id,
+                        got = ?message.stream_id,
+                        "Dropping a message for another stream on this stream"
+                    );
+                    continue;
+                }
+                Some(_) => {}
+            }
+
+            if let Some(send) = send.take() {
+                match shared.writers.lock().unwrap().entry(message.stream_id) {
+                    Entry::Vacant(entry) => {
+                        entry.insert(spawn_writer(&shared, message.stream_id, Some(send)));
+                    }
+                    // The peer opened a second stream for an id this side is
+                    // already writing on, which only a confused peer does.
+                    // Ours stays; this half is finished unused.
+                    Entry::Occupied(_) => drop(send),
+                }
+            }
+
+            shared
+                .streams
+                .record_rx(message.stream_id, payload.len() as u64);
+            shared.streams.dispatch(message).await;
+        }
+
+        // The peer finished (or the stream failed, or the connection is
+        // going): whatever this side still had for the stream is over too.
+        if let Some(stream_id) = stream_id
+            && !shared.cancel.is_cancelled()
+        {
+            shared.writers.lock().unwrap().remove(&stream_id);
+            shared.streams.close(stream_id);
+        }
+    });
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::network::stream::{StreamId, StreamRequester};
-    use crate::test_db;
-    use anyhow::Result;
-    use futures::channel::mpsc;
-    use std::pin::Pin;
-    use std::task::{Context, Poll};
+    use crate::network::stream::{Relay, Stream, StreamRequester, StreamResponder};
+    use crate::network::webtransport::{self, Dialer};
+    use crate::realm::{RealmCert, url::ServerUrl};
+    use crate::{AgentId, ClientId, InstanceId, ServerId, test_db};
+    use anyhow::{Result, anyhow, bail};
+    use rustls::server::{ResolvesServerCertUsingSni, WebPkiClientVerifier};
+    use serde::{Deserialize, Serialize};
+    use std::sync::RwLock;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::mpsc::Sender;
     use tokio::time::{Duration, timeout};
 
-    /// Stand-in for the real transport's message type.
-    #[derive(Debug, PartialEq, Eq)]
-    enum TestMessage {
-        Binary(Vec<u8>),
-        Ping(Vec<u8>),
-        Pong(Vec<u8>),
-        #[allow(dead_code)]
-        Text(String),
-    }
-
-    impl SocketMessage for TestMessage {
-        fn binary(payload: Vec<u8>) -> Self {
-            Self::Binary(payload)
-        }
-        fn ping(payload: Vec<u8>) -> Self {
-            Self::Ping(payload)
-        }
-        fn pong(payload: Vec<u8>) -> Self {
-            Self::Pong(payload)
-        }
-        fn frame(&self) -> Frame<'_> {
-            match self {
-                Self::Binary(data) => Frame::Binary(data),
-                Self::Ping(data) => Frame::Ping(data),
-                Self::Pong(data) => Frame::Pong(data),
-                Self::Text(_) => Frame::Other,
-            }
-        }
-    }
-
-    /// The transport's error type, which the driver only ever matches on.
-    #[derive(Debug)]
-    struct TestError;
-
-    /// A socket whose two directions are channels the test holds the far end of.
-    struct TestSocket {
-        incoming: mpsc::Receiver<Result<TestMessage, TestError>>,
-        outgoing: mpsc::Sender<TestMessage>,
-    }
-
-    impl Stream for TestSocket {
-        type Item = Result<TestMessage, TestError>;
-
-        fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-            Pin::new(&mut self.incoming).poll_next(cx)
-        }
-    }
-
-    impl Sink<TestMessage> for TestSocket {
-        type Error = mpsc::SendError;
-
-        fn poll_ready(
-            mut self: Pin<&mut Self>,
-            cx: &mut Context<'_>,
-        ) -> Poll<Result<(), Self::Error>> {
-            Pin::new(&mut self.outgoing).poll_ready(cx)
-        }
-        fn start_send(mut self: Pin<&mut Self>, item: TestMessage) -> Result<(), Self::Error> {
-            Pin::new(&mut self.outgoing).start_send(item)
-        }
-        fn poll_flush(
-            mut self: Pin<&mut Self>,
-            cx: &mut Context<'_>,
-        ) -> Poll<Result<(), Self::Error>> {
-            Pin::new(&mut self.outgoing).poll_flush(cx)
-        }
-        fn poll_close(
-            mut self: Pin<&mut Self>,
-            cx: &mut Context<'_>,
-        ) -> Poll<Result<(), Self::Error>> {
-            Pin::new(&mut self.outgoing).poll_close(cx)
-        }
-    }
-
-    /// Only a stream type can mint a [`StreamId`], so the tests bring one.
-    struct TestStream;
-
-    impl crate::network::stream::Stream for TestStream {
-        fn tag() -> u32 {
-            0x7e57_0001
-        }
-    }
-
-    impl StreamRequester for TestStream {
-        type In = ();
-        type Out = ();
-
-        fn new(
-            _: Self::Out,
-            _: tokio::sync::mpsc::Sender<Self::Out>,
-        ) -> impl Future<Output = Result<Self>> + Send {
-            async { Ok(Self) }
-        }
-    }
-
-    /// The driver, plus the far end of its socket.
+    /// A server endpoint on the loopback interface serving one realm the test
+    /// minted, and a dialer holding an endpoint certificate from it: exactly
+    /// what a server and the instances that attach to it hold.
     struct Harness {
-        connection: Arc<InstanceConnection>,
-        /// What the test sends to the driver.
-        peer_tx: mpsc::Sender<Result<TestMessage, TestError>>,
-        /// What the driver sends to the test.
-        peer_rx: mpsc::Receiver<TestMessage>,
+        server_id: ServerId,
+        endpoint: wtransport::Endpoint<wtransport::endpoint::endpoint_side::Server>,
+        dialer: Arc<Dialer>,
+        connections: crate::database::ResidentVec<ConnectionData>,
         _database: crate::database::DatabaseManager,
-        _connections: crate::database::ResidentVec<ConnectionData>,
     }
 
-    fn harness() -> Result<Harness> {
-        let database = test_db!(ConnectionData);
-        let realm = database.realm(RealmName::default())?;
-        let connections: crate::database::ResidentVec<ConnectionData> = realm.resident_vec(())?;
-        let data = connections.push(ConnectionData::scoped(crate::ServerId::random().into()))?;
+    impl Harness {
+        fn new() -> Result<Self> {
+            let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
-        let (peer_tx, incoming) = mpsc::channel(32);
-        let (outgoing, peer_rx) = mpsc::channel(32);
+            let database = test_db!(ConnectionData);
+            let connections = database
+                .realm(RealmName::default())?
+                .resident_vec::<ConnectionData>(())?;
 
-        let connection = InstanceConnection::socket(
-            TestSocket { incoming, outgoing },
-            data,
-            RealmName::default(),
-            ClusterId::default(),
-            &[],
-        );
+            let server_id = ServerId::random();
+            let ca = RealmCert::new_cluster(ClusterId::default(), RealmName::default())?;
+            let server_cert = ca.server_cert(server_id)?;
 
-        Ok(Harness {
-            connection,
-            peer_tx,
-            peer_rx,
-            _database: database,
-            _connections: connections,
-        })
+            // What `realm::server::realm_tls_config` builds for a server: the
+            // realm CA verifies peers, the server certificate is served by SNI.
+            let mut roots = rustls::RootCertStore::empty();
+            roots.add(ca.cert.clone().try_into()?)?;
+            let builder = rustls::ServerConfig::builder();
+            let key = builder.crypto_provider().key_provider.load_private_key(
+                server_cert
+                    .key
+                    .clone()
+                    .ok_or_else(|| anyhow!("No server key"))?
+                    .try_into()
+                    .map_err(|_| anyhow!("Failed to parse key"))?,
+            )?;
+            let mut sni = ResolvesServerCertUsingSni::new();
+            sni.add(
+                &server_cert.subject_name()?,
+                rustls::sign::CertifiedKey::new(vec![server_cert.cert.clone().try_into()?], key),
+            )?;
+            let tls = builder
+                .with_client_cert_verifier(WebPkiClientVerifier::builder(Arc::new(roots)).build()?)
+                .with_cert_resolver(Arc::new(sni));
+
+            let endpoint = webtransport::server_endpoint("127.0.0.1:0".parse()?, tls)?;
+            let url: ServerUrl =
+                format!("127.0.0.1:{}/default", endpoint.local_addr()?.port()).parse()?;
+            let dialer = Dialer::new(&ca.endpoint_cert(&url)?, &url)?;
+
+            Ok(Self {
+                server_id,
+                endpoint,
+                dialer,
+                connections,
+                _database: database,
+            })
+        }
+
+        /// Attach `instance` to the server: the handshake both sides run, and
+        /// then the driver on each. Returns the server's connection and the
+        /// instance's, in that order.
+        async fn attach(
+            &self,
+            instance: InstanceId,
+            server_handlers: &[&dyn RegisterResponders],
+            instance_handlers: &[&dyn RegisterResponders],
+        ) -> Result<(Arc<InstanceConnection>, Arc<InstanceConnection>)> {
+            let server_id = self.server_id;
+            let accept = async {
+                let request = self.endpoint.accept().await.await?;
+                let connection = request.accept().await?;
+                webtransport::open(connection, server_id.into()).await
+            };
+            let dial = async {
+                let connection = self.dialer.connect([]).await?;
+                webtransport::accept(connection).await
+            };
+            let (server_session, (remote, instance_session)) =
+                timeout(Duration::from_secs(10), async {
+                    tokio::try_join!(accept, dial)
+                })
+                .await??;
+            assert_eq!(remote, InstanceId::from(server_id));
+
+            let mut row = ConnectionData::scoped(server_id.into());
+            row.remote_instance = Some(instance);
+            let server = InstanceConnection::session(
+                server_session,
+                self.connections.push(row)?,
+                RealmName::default(),
+                ClusterId::default(),
+                server_handlers,
+            );
+
+            let mut row = ConnectionData::scoped(instance);
+            row.remote_instance = Some(remote);
+            let attached = InstanceConnection::session(
+                instance_session,
+                self.connections.push(row)?,
+                RealmName::default(),
+                ClusterId::default(),
+                instance_handlers,
+            );
+
+            Ok((server, attached))
+        }
     }
 
-    /// Let the socket task run until `check` holds, without moving the clock
-    /// (these tests measure virtual time, so advancing it would change what
-    /// they are asserting).
-    async fn settle(mut check: impl FnMut() -> bool) {
-        for _ in 0..1000 {
+    /// Wait for `check` to hold, on real time since real sockets are involved.
+    async fn until(mut check: impl FnMut() -> bool) {
+        for _ in 0..500 {
             if check() {
                 return;
             }
-            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        panic!("the socket task never got there");
+        panic!("it never happened");
     }
 
-    /// One `StreamMessage` the way a peer sends it: cbor on a binary frame.
-    fn binary(stream_id: StreamId) -> (TestMessage, u64) {
-        let encoded =
-            serde_cbor::to_vec(&StreamMessage::local(stream_id, b"hello".to_vec())).unwrap();
-        let len = encoded.len() as u64;
-        (TestMessage::Binary(encoded), len)
+    #[derive(Serialize, Deserialize)]
+    struct Word(String);
+
+    /// Echoes each request back. Counts itself in `live` while it exists, so a
+    /// test can tell when the registry let go of it.
+    struct EchoResponder {
+        live: Arc<AtomicUsize>,
     }
 
-    /// The keepalive ping goes out as soon as the socket comes up, and the pong
-    /// answering it is what measures the round trip.
-    #[tokio::test(start_paused = true)]
-    async fn pings_immediately_and_times_the_pong() -> Result<()> {
-        let mut h = harness()?;
+    impl Stream for EchoResponder {
+        fn tag() -> u32 {
+            0x7e57_0002
+        }
+    }
 
-        let payload = match timeout(Duration::from_secs(5), h.peer_rx.next())
-            .await?
-            .expect("socket closed")
-        {
-            TestMessage::Ping(payload) => payload,
-            other => panic!("expected a ping, got {other:?}"),
+    impl StreamResponder for EchoResponder {
+        type In = Word;
+        type Out = Word;
+
+        async fn on_message(&self, word: Word, sender: Sender<Word>) -> Result<()> {
+            sender.send(word).await?;
+            Ok(())
+        }
+    }
+
+    impl Drop for EchoResponder {
+        fn drop(&mut self) {
+            self.live.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    /// Registers [`EchoResponder`]s, and knows how many are alive.
+    #[derive(Default)]
+    struct Echo {
+        live: Arc<AtomicUsize>,
+    }
+
+    impl Echo {
+        fn live(&self) -> usize {
+            self.live.load(Ordering::SeqCst)
+        }
+    }
+
+    impl RegisterResponders for Echo {
+        fn register_responders(&self, registry: &StreamRegistry) {
+            let live = self.live.clone();
+            registry.register_responder(move || {
+                live.fetch_add(1, Ordering::SeqCst);
+                EchoResponder { live: live.clone() }
+            });
+        }
+    }
+
+    /// Collects what comes back.
+    struct EchoRequester {
+        replies: mpsc::UnboundedSender<String>,
+    }
+
+    impl Stream for EchoRequester {
+        fn tag() -> u32 {
+            EchoResponder::tag()
+        }
+    }
+
+    impl StreamRequester for EchoRequester {
+        type In = Word;
+        type Out = Word;
+
+        async fn new(_: Word, _: Sender<Word>) -> Result<Self> {
+            bail!("the tests build this directly")
+        }
+
+        async fn on_message(&self, word: Word, _: Sender<Word>) -> Result<()> {
+            self.replies.send(word.0)?;
+            Ok(())
+        }
+    }
+
+    /// Open an echo stream on `from`, addressed to `to` if it is to be relayed,
+    /// and prove it works with one round trip.
+    async fn echo_stream(
+        from: &InstanceConnection,
+        to: Option<InstanceId>,
+        word: &str,
+    ) -> Result<(
+        StreamId,
+        Sender<StreamMessage>,
+        mpsc::UnboundedReceiver<String>,
+    )> {
+        let (replies, mut received) = mpsc::unbounded_channel();
+        let requester = EchoRequester { replies };
+        let initial = Word(word.to_string());
+        let (id, tx) = match to {
+            Some(to) => from.open_stream_to(to, requester, initial).await?,
+            None => from.open_stream(requester, initial).await?,
         };
+        assert_eq!(
+            timeout(Duration::from_secs(5), received.recv()).await?,
+            Some(word.to_string())
+        );
+        Ok((id, tx, received))
+    }
 
-        // No measurement until a pong answers it.
-        assert_eq!(h.connection.data.read().latency, None);
+    /// Either side can open a stream to a responder on the other, and the
+    /// bytes are accounted against the stream at both ends.
+    #[tokio::test]
+    async fn streams_cross_the_session_both_ways() -> Result<()> {
+        let harness = Harness::new()?;
+        let (server_echo, client_echo) = (Echo::default(), Echo::default());
+        let (server, client) = harness
+            .attach(ClientId::random().into(), &[&server_echo], &[&client_echo])
+            .await?;
 
-        // Time passes between the ping and its answer, so the measurement is
-        // the round trip rather than a constant.
-        tokio::time::advance(Duration::from_millis(250)).await;
-        h.peer_tx.try_send(Ok(TestMessage::Pong(payload))).unwrap();
+        let (id, tx, mut replies) = echo_stream(&client, None, "hello").await?;
+        tx.send(StreamMessage::local(
+            id,
+            serde_cbor::to_vec(&Word("again".into()))?,
+        ))
+        .await?;
+        assert_eq!(
+            timeout(Duration::from_secs(5), replies.recv()).await?,
+            Some("again".to_string())
+        );
+        let (rx, sent) = client.streams.traffic(id).expect("accounted on the client");
+        assert!(rx > 0 && sent > 0);
+        let (rx, sent) = server.streams.traffic(id).expect("accounted on the server");
+        assert!(rx > 0 && sent > 0);
 
-        settle(|| h.connection.data.read().latency.is_some()).await;
-        assert_eq!(h.connection.data.read().latency, Some(250_000));
+        // The other way round, which is what sync does.
+        echo_stream(&server, None, "hello").await?;
+        assert_eq!(server_echo.live(), 1);
+        assert_eq!(client_echo.live(), 1);
         Ok(())
     }
 
-    /// A peer may send an unsolicited pong as a heartbeat; timing one of those
-    /// against our own ping would report a round trip that never happened.
-    #[tokio::test(start_paused = true)]
-    async fn ignores_an_unsolicited_pong() -> Result<()> {
-        let mut h = harness()?;
+    /// Closing a stream finishes its QUIC stream, which is how the peer learns
+    /// to drop the responder; and since every stream has its own, the others
+    /// aren't affected.
+    #[tokio::test]
+    async fn closing_a_stream_finishes_it_on_the_peer() -> Result<()> {
+        let harness = Harness::new()?;
+        let echo = Echo::default();
+        let (_server, client) = harness
+            .attach(AgentId::random().into(), &[&echo], &[])
+            .await?;
 
-        timeout(Duration::from_secs(5), h.peer_rx.next()).await?;
-        tokio::time::advance(Duration::from_millis(250)).await;
-        h.peer_tx
-            .try_send(Ok(TestMessage::Pong(0xdead_beefu64.to_le_bytes().to_vec())))
-            .unwrap();
+        let (a, _, _) = echo_stream(&client, None, "a").await?;
+        let (b, b_tx, mut b_replies) = echo_stream(&client, None, "b").await?;
+        assert_eq!(echo.live(), 2);
 
-        // The socket is ordered, so the answer to this ping is proof that the
-        // pong ahead of it has already been handled.
-        h.peer_tx.try_send(Ok(TestMessage::Ping(vec![1]))).unwrap();
+        client.close_stream(a);
+        until(|| echo.live() == 1).await;
+
+        b_tx.send(StreamMessage::local(
+            b,
+            serde_cbor::to_vec(&Word("still".into()))?,
+        ))
+        .await?;
         assert_eq!(
-            timeout(Duration::from_secs(5), h.peer_rx.next())
-                .await?
-                .expect("socket closed"),
-            TestMessage::Pong(vec![1])
+            timeout(Duration::from_secs(5), b_replies.recv()).await?,
+            Some("still".to_string())
         );
 
-        assert_eq!(h.connection.data.read().latency, None);
+        client.close_stream(b);
+        until(|| echo.live() == 0).await;
         Ok(())
     }
 
-    /// A peer's ping is answered immediately rather than queued behind the next
-    /// write, because the peer's keepalive deadline is waiting on it.
-    #[tokio::test(start_paused = true)]
-    async fn answers_a_peer_ping_with_a_pong() -> Result<()> {
-        let mut h = harness()?;
+    /// A relayed stream is closed on the connection it was relayed to, so the
+    /// responder at the far end goes when the requester does.
+    #[tokio::test]
+    async fn closing_a_relayed_stream_follows_it_to_the_target() -> Result<()> {
+        let harness = Harness::new()?;
+        let agent_id: InstanceId = AgentId::random().into();
+        let echo = Echo::default();
 
-        // Discard our own opening keepalive ping.
-        timeout(Duration::from_secs(5), h.peer_rx.next()).await?;
+        let (server_client, client) = harness.attach(ClientId::random().into(), &[], &[]).await?;
+        let (server_agent, _agent) = harness.attach(agent_id, &[], &[&echo]).await?;
 
-        h.peer_tx
-            .try_send(Ok(TestMessage::Ping(vec![7, 7, 7])))
-            .unwrap();
+        // What the server does with its inbound connections.
+        let inbound = Arc::new(RwLock::new(vec![
+            server_client.clone(),
+            server_agent.clone(),
+        ]));
+        let relay = Arc::new(Relay::new(inbound));
+        server_client.streams.set_relay(Arc::downgrade(&relay));
+        server_agent.streams.set_relay(Arc::downgrade(&relay));
 
-        let answer = timeout(Duration::from_secs(5), h.peer_rx.next())
-            .await?
-            .expect("socket closed");
-        assert_eq!(answer, TestMessage::Pong(vec![7, 7, 7]));
+        let (id, _, _) = echo_stream(&client, Some(agent_id), "relayed").await?;
+        assert_eq!(echo.live(), 1);
+
+        client.close_stream(id);
+        until(|| echo.live() == 0).await;
         Ok(())
     }
 
-    /// A binary frame decodes to a `StreamMessage` and is accounted against its
-    /// stream; an outbound one is encoded and accounted the same way.
-    #[tokio::test(start_paused = true)]
-    async fn frames_stream_messages_both_ways() -> Result<()> {
-        let mut h = harness()?;
-        timeout(Duration::from_secs(5), h.peer_rx.next()).await?;
+    /// The keepalive ping goes out as soon as the session comes up, and the
+    /// pong answering it is what measures the round trip, on both sides.
+    #[tokio::test]
+    async fn pings_on_connect_and_times_the_pong() -> Result<()> {
+        let harness = Harness::new()?;
+        let (server, client) = harness.attach(AgentId::random().into(), &[], &[]).await?;
 
-        let stream_id = TestStream::generate_id();
-        let (frame, len) = binary(stream_id);
-        h.peer_tx.try_send(Ok(frame)).unwrap();
-
-        settle(|| h.connection.streams.traffic(stream_id).is_some()).await;
-        assert_eq!(h.connection.streams.traffic(stream_id), Some((len, 0)));
-
-        // Outbound: what the registry sends crosses the socket as one binary
-        // frame, accounted against the same stream.
-        h.connection
-            .streams
-            .send_raw(StreamMessage::local(stream_id, b"hello".to_vec()))
+        until(|| server.data.read().latency.is_some() && client.data.read().latency.is_some())
             .await;
-
-        let sent = timeout(Duration::from_secs(5), h.peer_rx.next())
-            .await?
-            .expect("socket closed");
-        assert_eq!(sent, binary(stream_id).0);
-        assert_eq!(h.connection.streams.traffic(stream_id), Some((len, len)));
         Ok(())
     }
 
-    /// A peer that stops answering is declared dead, which is what makes a
-    /// partition distinguishable from an idle connection.
-    #[tokio::test(start_paused = true)]
-    async fn keepalive_deadline_cancels_the_connection() -> Result<()> {
-        let h = harness()?;
+    /// Cancelling a connection closes the QUIC connection under the peer, so
+    /// the peer's janitors run too rather than waiting out the deadline.
+    #[tokio::test]
+    async fn cancelling_ends_the_peer_too() -> Result<()> {
+        let harness = Harness::new()?;
+        let (server, client) = harness.attach(AgentId::random().into(), &[], &[]).await?;
 
-        // Nothing is ever read from `peer_rx`, so the driver's keepalive pings
-        // pile up in the channel (whose capacity the deadline is reached well
-        // inside of) rather than failing the send. The clock auto-advances to
-        // each keepalive tick, so this is the deadline firing, not a timeout.
-        timeout(
-            super::super::KEEPALIVE_DEADLINE * 10,
-            h.connection.cancel.cancelled(),
-        )
-        .await?;
-        Ok(())
-    }
-
-    /// However the socket ended, the connection is over: the janitors waiting
-    /// on the token run on a transport error too.
-    #[tokio::test(start_paused = true)]
-    async fn transport_error_cancels_the_connection() -> Result<()> {
-        let mut h = harness()?;
-        timeout(Duration::from_secs(5), h.peer_rx.next()).await?;
-
-        h.peer_tx.try_send(Err(TestError)).unwrap();
-
-        timeout(Duration::from_secs(5), h.connection.cancel.cancelled()).await?;
+        client.cancel.cancel();
+        timeout(Duration::from_secs(5), server.cancel.cancelled()).await?;
         Ok(())
     }
 }

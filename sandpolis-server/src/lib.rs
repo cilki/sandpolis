@@ -388,10 +388,10 @@ impl ServerConnection {
 
         // The server decides whether we may attach only once the session is
         // up, since the realm comes off the certificate chain of the
-        // connection itself. It says yes by opening the stream, and no by
-        // closing with a code — of which "log in first" is the one callers
-        // must be able to tell apart from the server being down.
-        let (remote_instance, socket) = match webtransport::accept(&connection).await {
+        // connection itself. It says yes by opening the control stream, and
+        // no by closing with a code — of which "log in first" is the one
+        // callers must be able to tell apart from the server being down.
+        let (remote_instance, session) = match webtransport::accept(connection).await {
             Ok(accepted) => accepted,
             Err(e) => {
                 if e.downcast_ref::<webtransport::Refused>()
@@ -419,8 +419,8 @@ impl ServerConnection {
         let mut handlers: Vec<&dyn sandpolis_instance::network::RegisterResponders> =
             collected_responders().collect();
         handlers.push(&sync_reg);
-        let instance_connection = InstanceConnection::socket(
-            socket,
+        let instance_connection = InstanceConnection::session(
+            session,
             data,
             self.realm.clone(),
             self.cluster_id,
@@ -428,23 +428,17 @@ impl ServerConnection {
         );
         *self.inner.write().unwrap() = Some(instance_connection.clone());
 
-        // Clean up after the socket however it ends: the row leaves the database
-        // (which is what wakes the `connections.listen` reconcilers) and the slot
-        // goes empty, so the reconnect loops here and in the client see there is
-        // work to do. The QUIC connection is held until then, since the socket
-        // task only holds the stream halves and dropping the last handle would
-        // close it under them.
+        // Clean up after the session however it ends: the row leaves the
+        // database (which is what wakes the `connections.listen` reconcilers)
+        // and the slot goes empty, so the reconnect loops here and in the
+        // client see there is work to do.
         {
             let cancel = instance_connection.cancel.clone();
             let row = instance_connection.data.read()._id;
             let connections = network.connections.clone();
             let inner = self.inner.clone();
             tokio::spawn(async move {
-                tokio::select! {
-                    _ = cancel.cancelled() => {}
-                    _ = connection.closed() => {}
-                }
-                drop(connection);
+                cancel.cancelled().await;
                 if let Err(e) = connections.remove_local(row) {
                     debug!(error = %e, "Failed to remove a closed connection");
                 }

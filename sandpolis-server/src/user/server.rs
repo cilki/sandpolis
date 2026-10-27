@@ -643,12 +643,12 @@ async fn accept_session(
         return;
     }
 
-    // The peer is in: open the stream and say who we are on it, which is what
-    // the dialer has been waiting for.
-    let socket = match webtransport::open(&connection, state.instance.instance_id).await {
-        Ok(socket) => socket,
+    // The peer is in: open the control stream and say who we are on it, which
+    // is what the dialer has been waiting for.
+    let session = match webtransport::open(connection, state.instance.instance_id).await {
+        Ok(session) => session,
         Err(e) => {
-            tracing::debug!(%peer, error = %e, "Session stream not opened");
+            tracing::debug!(%peer, error = %e, "Control stream not opened");
             return;
         }
     };
@@ -682,8 +682,8 @@ async fn accept_session(
         sandpolis_instance::network::collected_responders().collect();
     handlers.push(&sync_reg);
 
-    let instance_connection = InstanceConnection::socket(
-        socket,
+    let instance_connection = InstanceConnection::session(
+        session,
         data,
         realm,
         state.instance.cluster_id,
@@ -739,17 +739,6 @@ async fn accept_session(
             tracing::warn!(error = %e, "Failed to open agent sync stream");
         }
     }
-
-    // The QUIC connection has to outlive the socket task, which only holds the
-    // stream halves; dropping the last handle would close it under them.
-    let cancel = instance_connection.cancel.clone();
-    tokio::spawn(async move {
-        tokio::select! {
-            _ = cancel.cancelled() => {}
-            _ = connection.closed() => {}
-        }
-        drop(connection);
-    });
 
     network.track_inbound(instance_connection);
 }
