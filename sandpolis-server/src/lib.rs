@@ -415,6 +415,27 @@ impl ServerConnection {
         Ok(instance_connection)
     }
 
+    /// Hang up for good, as a process does on its way out: end the session and
+    /// tell the server so, waiting at most `grace` for that to reach it. The
+    /// connection can't open another session afterwards.
+    ///
+    /// Without this, a peer that simply exits looks the same to the server as
+    /// one that lost its network, and stays attached until the keepalive
+    /// deadline runs out.
+    #[cfg(any(feature = "client", feature = "agent", feature = "server"))]
+    pub async fn close(&self, grace: std::time::Duration) {
+        self.cancel.cancel();
+
+        // Cancel the session's socket task explicitly. `Drop` would also do
+        // this once every Arc is gone, but a stream may still hold a
+        // reference. The janitor spawned by `open_session` removes the
+        // connection's row once this lands.
+        if let Some(connection) = self.inner.write().unwrap().take() {
+            connection.cancel.cancel();
+        }
+        self.dialer.close(grace).await;
+    }
+
     pub async fn get<Response>(&self, endpoint: &str, body: impl Serialize) -> Result<Response>
     where
         Response: DeserializeOwned,
