@@ -17,7 +17,7 @@ use crate::deploy::os::{TargetOs, parse_os_release};
 use anyhow::{Context, Result, anyhow, bail};
 use russh::ChannelMsg;
 use russh::client::{self, AuthResult, Handle};
-use russh::keys::{HashAlg, PrivateKeyWithHashAlg, decode_secret_key, ssh_key};
+use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKeyOrCertificate, decode_secret_key};
 use sandpolis_instance::network::{
     RegisterResponders, ResponderRegistration, StreamRegistry, StreamResponder,
 };
@@ -357,8 +357,13 @@ struct DeployHandler {
 impl client::Handler for DeployHandler {
     type Error = russh::Error;
 
-    async fn check_server_key(&mut self, key: &ssh_key::PublicKey) -> Result<bool, Self::Error> {
-        let actual = key.fingerprint(HashAlg::Sha256).to_string();
+    async fn check_server_key(
+        &mut self,
+        key: &PublicKeyOrCertificate,
+    ) -> Result<bool, Self::Error> {
+        // A host certificate carries the host key; the fingerprint is of that
+        // key either way, so an operator configures the same value regardless.
+        let actual = key.public_key().fingerprint(HashAlg::Sha256).to_string();
         let Some(expected) = self.fingerprint.as_deref() else {
             // Trust on first use. Loud, because it's the one case where a man in
             // the middle goes unnoticed.

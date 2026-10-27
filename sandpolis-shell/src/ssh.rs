@@ -37,7 +37,7 @@ mod server {
     use anyhow::{Result, bail};
     use russh::ChannelMsg;
     use russh::client::{self, AuthResult, Handle};
-    use russh::keys::{HashAlg, PrivateKeyWithHashAlg, load_secret_key, ssh_key};
+    use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKeyOrCertificate, load_secret_key};
     use sandpolis_instance::network::StreamResponder;
     use sandpolis_macros::Stream;
     use sandpolis_probe::config::SshProbeConfig;
@@ -159,9 +159,12 @@ mod server {
 
         async fn check_server_key(
             &mut self,
-            key: &ssh_key::PublicKey,
+            key: &PublicKeyOrCertificate,
         ) -> Result<bool, Self::Error> {
-            let actual = key.fingerprint(HashAlg::Sha256).to_string();
+            // A host certificate carries the host key; the fingerprint is of
+            // that key either way, so an operator configures the same value
+            // regardless.
+            let actual = key.public_key().fingerprint(HashAlg::Sha256).to_string();
             let Some(expected) = self.fingerprint.as_deref() else {
                 // Trust on first use. Loud, because it's the one case where a
                 // man in the middle goes unnoticed.

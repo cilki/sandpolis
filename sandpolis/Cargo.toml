@@ -11,7 +11,7 @@ version = "8.0.0"
 [build-dependencies]
 roniker = { workspace = true, features = ["analyze"] }
 serde_json = { workspace = true }
-slint-build = { version = "1.17", optional = true }
+slint-build = { version = "1.18", optional = true }
 walkdir = "2"
 
 [dependencies]
@@ -22,7 +22,7 @@ cilki = { version = "0.2", features = [
 ] }
 clap = { workspace = true }
 colored = { workspace = true }
-dirs = "6"
+dirs = "7"
 fs2 = "0.4"
 futures = { workspace = true }
 ron = { workspace = true }
@@ -54,7 +54,7 @@ tokio-stream = { workspace = true }
 tokio = { workspace = true }
 tower-http = { workspace = true }
 roniker = { workspace = true, optional = true, features = ["lsp"] }
-tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 tracing = { workspace = true }
 validator = { workspace = true }
 
@@ -66,7 +66,7 @@ axum-server = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
 
 # Boot agent exclusive
-slint = { version = "1.17", optional = true, default-features = false, features = [
+slint = { version = "1.18", optional = true, default-features = false, features = [
   "std",
   "compat-1-2",
   "backend-winit",

@@ -9,7 +9,7 @@ version = "0.0.1"
 anyhow = { workspace = true }
 chrono = { workspace = true }
 inventory = { workspace = true }
-linux-audit-parser = "0.2.7"
+linux-audit-parser = "0.2.8"
 native_db = { workspace = true }
 native_model = { workspace = true }
 serde = { workspace = true }
@@ -21,7 +21,7 @@ sandpolis-macros = { path = "../sandpolis-macros", version = "0.0.1" }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-test-log = { version = "0.2.18", features = ["trace"] }
+test-log = { version = "0.2.21", features = ["trace"] }
 tokio = { workspace = true }
 
 [features]

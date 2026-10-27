@@ -19,10 +19,10 @@ pub struct UnitListEntry {
     pub active_state: String,
     pub sub_state: String,
     pub followed: String,
-    pub object_path: zbus::zvariant::OwnedObjectPath,
+    pub object_path: zbus::OwnedObjectPath,
     pub job_id: u32,
     pub job_type: String,
-    pub job_object_path: zbus::zvariant::OwnedObjectPath,
+    pub job_object_path: zbus::OwnedObjectPath,
 }
 
 #[zbus::proxy(

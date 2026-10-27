@@ -28,7 +28,7 @@ sandpolis-client = { path = "../sandpolis-client", version = "0.0.1", optional =
 ratatui = { workspace = true, optional = true }
 
 [dev-dependencies]
-test-log = { version = "0.2.18", features = ["trace"] }
+test-log = { version = "0.2.21", features = ["trace"] }
 tokio = { workspace = true }
 
 [features]
