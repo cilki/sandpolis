@@ -74,15 +74,26 @@ pub struct NetworkManager {
 }
 
 /// How often each side of a connection sends a keepalive ping.
-pub(crate) const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+///
+/// The session runs over UDP, so this is also what keeps the peer's NAT and
+/// firewall bindings open: many of them forget an idle UDP flow after 30
+/// seconds, far sooner than they would a TCP connection. A ping and its pong
+/// are a few dozen bytes each, so pinging this often costs next to nothing.
+pub(crate) const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
 
 /// How long a connection may go without receiving anything before it's declared
-/// dead. A peer that vanishes without closing its socket (a partition, a killed
-/// machine) is otherwise indistinguishable from an idle one, and that is exactly
-/// the case where going offline needs to be noticed.
+/// dead. A peer that vanishes without closing its session (a partition, a
+/// killed process or machine) is otherwise indistinguishable from an idle one,
+/// and that is exactly the case where going offline needs to be noticed: UDP
+/// has no FIN, so this deadline is how long it takes.
 ///
-/// Generous relative to the ping interval: a missed pong is not yet a fault.
-pub(crate) const KEEPALIVE_DEADLINE: Duration = Duration::from_secs(90);
+/// Three intervals: a single lost ping or pong is not yet a fault. It is also
+/// the QUIC idle timeout, which closes the connection at exactly this point.
+pub(crate) const KEEPALIVE_DEADLINE: Duration = Duration::from_secs(30);
+
+// A deadline that a single missed pong could trip would drop healthy
+// connections on any lossy link.
+const _: () = assert!(KEEPALIVE_DEADLINE.as_secs() >= 2 * KEEPALIVE_INTERVAL.as_secs());
 
 impl NetworkManager {
     /// The inbound connections that are still live, i.e. whose socket hasn't
