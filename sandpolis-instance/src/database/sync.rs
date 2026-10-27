@@ -13,6 +13,7 @@
 use super::{Data, RealmDatabase};
 use crate::InstanceId;
 use anyhow::Result;
+use native_db::transaction::RwTransaction;
 use native_db::watch::Event;
 use native_model::Model;
 use serde::{Deserialize, Serialize};
@@ -81,7 +82,7 @@ impl SyncFilter {
     }
 }
 
-type ApplyFn = Box<dyn Fn(&RealmDatabase, SyncOp, &[u8]) -> Result<()> + Send + Sync>;
+type ApplyFn = Box<dyn Fn(&RwTransaction, SyncOp, &[u8]) -> Result<()> + Send + Sync>;
 type SnapshotFn = Box<dyn Fn(&RealmDatabase, FilterScope) -> Result<Vec<SyncRecord>> + Send + Sync>;
 type WatchFn = Box<
     dyn Fn(&RealmDatabase, FilterScope, Sender<SyncRecord>, CancellationToken) -> Result<()>
@@ -129,11 +130,9 @@ impl SyncRegistry {
     {
         let model_id = T::native_model_id();
 
-        let apply: ApplyFn = Box::new(|db, op, bytes| {
+        let apply: ApplyFn = Box::new(|rw, op, bytes| {
             let (item, _): (T, u32) = native_model::decode(bytes.to_vec())
                 .map_err(|e| anyhow::anyhow!("decode failed: {e}"))?;
-            // Replication is the one write a replica is entitled to.
-            let rw = db.replica_write()?;
             match op {
                 SyncOp::Upsert => {
                     // There is exactly one writer per record, so `_revision` is
@@ -151,7 +150,6 @@ impl SyncRegistry {
                     let _ = rw.remove(item);
                 }
             }
-            rw.commit()?;
             Ok(())
         });
 
@@ -213,10 +211,56 @@ impl SyncRegistry {
         );
     }
 
-    /// Apply a record to the local database.
+    /// Apply a record to the local database in a transaction of its own.
     pub fn apply(&self, db: &RealmDatabase, record: &SyncRecord) -> Result<()> {
+        // Replication is the one write a replica is entitled to.
+        let rw = db.replica_write()?;
+        self.apply_in(&rw, record)?;
+        rw.commit()?;
+        Ok(())
+    }
+
+    /// Apply a batch of records (a snapshot, typically) to the local database,
+    /// returning the records that could not be applied and why.
+    ///
+    /// A commit costs several times what the write it commits does, so the
+    /// batch goes into one transaction. Applying the records in order within it
+    /// is equivalent to committing each in turn: later records see earlier ones,
+    /// so the revision guard still decides between two copies of a row. If any
+    /// record fails, that transaction is thrown away — a failed write may have
+    /// left a row half-indexed — and the batch is replayed one transaction per
+    /// record, so a bad record costs only itself.
+    pub fn apply_all<'r>(
+        &self,
+        db: &RealmDatabase,
+        records: &'r [SyncRecord],
+    ) -> Vec<(&'r SyncRecord, anyhow::Error)> {
+        if records.len() > 1 {
+            let batch = db.replica_write().and_then(|rw| {
+                for record in records {
+                    self.apply_in(&rw, record)?;
+                }
+                rw.commit()?;
+                Ok(())
+            });
+            match batch {
+                Ok(()) => return Vec::new(),
+                Err(e) => tracing::debug!(
+                    error = %e,
+                    "Batched sync apply failed; applying records one at a time"
+                ),
+            }
+        }
+
+        records
+            .iter()
+            .filter_map(|record| self.apply(db, record).err().map(|e| (record, e)))
+            .collect()
+    }
+
+    fn apply_in(&self, rw: &RwTransaction, record: &SyncRecord) -> Result<()> {
         match self.types.get(&record.model_id) {
-            Some(t) => (t.apply)(db, record.op, &record.bytes),
+            Some(t) => (t.apply)(rw, record.op, &record.bytes),
             None => Ok(()), // unknown model — ignore
         }
     }
@@ -503,6 +547,72 @@ mod tests {
         let (stored, _): (SyncTestData, u32) =
             native_model::decode(snapshot[0].bytes.clone()).unwrap();
         assert_eq!(stored.value, 3);
+
+        Ok(())
+    }
+
+    /// A batch lands in one transaction but must behave like the records were
+    /// applied one by one: the revision guard sees rows written earlier in the
+    /// same batch, and a record that fails costs only itself.
+    #[tokio::test]
+    async fn apply_all_matches_one_at_a_time() -> Result<()> {
+        use crate::database::{Data, DataRevision};
+
+        let mut reg = SyncRegistry::new();
+        reg.register_scoped::<SyncTestData>(|d| d._instance_id);
+
+        let db: DatabaseManager = test_db!(SyncTestData);
+        let realm = db.realm(RealmName::default())?;
+
+        let encode = |item: &SyncTestData| SyncRecord {
+            model_id: <SyncTestData as Model>::native_model_id(),
+            op: SyncOp::Upsert,
+            bytes: native_model::encode(item).unwrap(),
+        };
+        let stored = |name: &str| -> Result<Option<u32>> {
+            Ok(reg
+                .snapshot(&realm, &SyncFilter::all())?
+                .into_iter()
+                .map(|r| native_model::decode::<SyncTestData>(r.bytes).unwrap().0)
+                .find(|d| d.name == name)
+                .map(|d| d.value))
+        };
+
+        let mut item = SyncTestData {
+            name: "x".into(),
+            value: 2,
+            ..SyncTestData::scoped(AgentId::random().into())
+        };
+        item.set_revision(DataRevision::Latest(2));
+        let mut stale = item.clone();
+        stale.set_revision(DataRevision::Latest(1));
+        stale.value = 1;
+        let other = SyncTestData {
+            name: "y".into(),
+            value: 7,
+            ..SyncTestData::scoped(AgentId::random().into())
+        };
+
+        // The stale copy arrives after the newer one within one batch, so the
+        // guard has to see the newer row before the batch commits.
+        let batch = [encode(&item), encode(&stale), encode(&other)];
+        assert!(reg.apply_all(&realm, &batch).is_empty());
+        assert_eq!(stored("x")?, Some(2));
+        assert_eq!(stored("y")?, Some(7));
+
+        // One undecodable record sinks the shared transaction, but replaying
+        // the batch record by record still lands everything else.
+        let mut newer = item.clone();
+        newer.set_revision(DataRevision::Latest(3));
+        newer.value = 3;
+        // A valid model header over a truncated body.
+        let mut garbage = encode(&other);
+        garbage.bytes.truncate(10);
+        let batch = [garbage, encode(&newer)];
+        let failed = reg.apply_all(&realm, &batch);
+        assert_eq!(failed.len(), 1);
+        assert!(std::ptr::eq(failed[0].0, &batch[0]));
+        assert_eq!(stored("x")?, Some(3));
 
         Ok(())
     }

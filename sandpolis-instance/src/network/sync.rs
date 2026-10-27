@@ -88,10 +88,8 @@ impl StreamRequester for SyncRequester {
     }
 
     async fn on_message(&self, update: Self::In, _: Sender<Self::Out>) -> Result<()> {
-        for record in &update.records {
-            if let Err(e) = SYNC.apply(&self.db, record) {
-                tracing::debug!(error = %e, model = record.model_id, "Failed to apply sync record");
-            }
+        for (record, e) in SYNC.apply_all(&self.db, &update.records) {
+            tracing::debug!(error = %e, model = record.model_id, "Failed to apply sync record");
         }
         if update.snapshot_complete
             && let Some(notify) = &self.snapshot_complete

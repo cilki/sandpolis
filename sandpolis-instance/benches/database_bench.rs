@@ -1,4 +1,6 @@
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{
+    BatchSize, BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main,
+};
 use native_db::*;
 use native_model::{Model, native_model};
 use sandpolis_instance::database::{
@@ -511,6 +513,51 @@ fn bench_transaction_throughput(c: &mut Criterion) {
     group.finish();
 }
 
+/// Benchmark: Applying a replicated snapshot, as a `SyncRequester` does when a
+/// subscription opens (and as ownership hydration waits on).
+fn bench_sync_apply(c: &mut Criterion) {
+    use sandpolis_instance::database::sync::{SyncOp, SyncRecord, SyncRegistry};
+
+    let mut registry = SyncRegistry::new();
+    registry.register::<BenchData>();
+
+    let mut group = c.benchmark_group("sync_apply");
+    for count in [10, 100, 1000].iter() {
+        let records: Vec<SyncRecord> = (0..*count)
+            .map(|i| SyncRecord {
+                model_id: BenchData::native_model_id(),
+                op: SyncOp::Upsert,
+                bytes: native_model::encode(&BenchData {
+                    name: format!("item_{i}"),
+                    value: i,
+                    data: vec![0u8; 100],
+                    ..Default::default()
+                })
+                .unwrap(),
+            })
+            .collect();
+
+        group.throughput(Throughput::Elements(*count as u64));
+        group.bench_with_input(BenchmarkId::from_parameter(count), &records, |b, records| {
+            // Creating (and dropping) the database dwarfs a small snapshot, so
+            // both stay out of the measurement.
+            b.iter_batched(
+                || {
+                    let database = create_test_db();
+                    let db = database.realm(RealmName::default()).unwrap();
+                    (database, db)
+                },
+                |(database, db)| {
+                    assert!(registry.apply_all(&db, records).is_empty());
+                    (database, db)
+                },
+                BatchSize::PerIteration,
+            );
+        });
+    }
+    group.finish();
+}
+
 /// Benchmark: Watcher event processing latency
 fn bench_watcher_latency(c: &mut Criterion) {
     let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -551,6 +598,7 @@ criterion_group!(
     bench_temporal_history,
     bench_data_size_impact,
     bench_transaction_throughput,
+    bench_sync_apply,
     bench_watcher_latency,
 );
 
