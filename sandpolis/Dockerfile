@@ -102,7 +102,7 @@ ENV PATH=/bin:/runtime/bin \
     HOME=/tmp \
     S7S_DATA=/data
 VOLUME /data
-EXPOSE 8768
+EXPOSE 8768/tcp 8768/udp
 ENTRYPOINT [ "/bin/sandpolis" ]
 CMD [ "server" ]
 
@@ -156,5 +156,5 @@ ENV PATH=/bin:/runtime/bin \
     GST_PLUGIN_SYSTEM_PATH_1_0=/runtime/lib/gstreamer-1.0 \
     ALSA_CONFIG_PATH=/runtime/share/alsa/alsa.conf
 VOLUME /data
-EXPOSE 8768
+EXPOSE 8768/tcp 8768/udp
 ENTRYPOINT [ "/runtime/bin/bash", "/bin/sandpolis-demo" ]

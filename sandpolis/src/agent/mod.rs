@@ -19,7 +19,7 @@ use tracing::error;
 pub mod boot;
 
 /// How long a server connection must stay up before it counts as healthy and
-/// the backoff resets. Without it, a server that accepts the websocket and then
+/// the backoff resets. Without it, a server that accepts the session and then
 /// immediately drops it would reset the backoff on every attempt, and the agent
 /// would reconnect in a tight loop.
 const STABLE_AFTER: Duration = Duration::from_secs(30);
@@ -224,11 +224,11 @@ pub async fn main(
         }
 
         // Stay disconnected between check-ins. On each scheduled tick,
-        // open the websocket so the server pulls our accumulated data
+        // open the session so the server pulls our accumulated data
         // and delivers any pending work, hold it briefly, then close.
         ServerConnectStrategy::Polling { schedule, timeout } => {
             // Build the connection (http client + banner) once and reuse
-            // it; only the websocket opens and closes per window.
+            // it; only the session opens and closes per window.
             // The same backoff and the same reporting as the continuous loop:
             // a polling agent that can't reach its server at all is in exactly
             // the same trouble, and has even less chance of being noticed.
@@ -267,11 +267,11 @@ pub async fn main(
                 debug!(url = %url, waiting = ?wait, "Waiting for next poll window");
                 sleep(wait).await;
 
-                match entry.open_websocket(&network, &instance).await {
+                match entry.open_session(&network, &instance).await {
                     Ok(_) => {
                         info!(url = %url, timeout = ?timeout, "Poll window open");
                         sleep(*timeout).await;
-                        entry.close_websocket();
+                        entry.close_session();
                         debug!(url = %url, "Poll window closed");
                     }
                     Err(e) => {
@@ -285,7 +285,7 @@ pub async fn main(
 
 /// One attempt at connecting to the server and holding the connection open.
 ///
-/// Returns how long the websocket stayed up, or an error if it never came up.
+/// Returns how long the session stayed up, or an error if it never came up.
 /// Nothing is waited out in here: the caller owns the backoff, so that every way
 /// an attempt can fail is retried the same way.
 ///
@@ -311,12 +311,12 @@ async fn attempt_connection(
         connection: entry.clone(),
     };
 
-    // The websocket is what the server syncs this agent's database over and
+    // The session is what the server syncs this agent's database over and
     // what carries every stream, so a connection without one is no use to
     // anybody: fail the attempt and let the caller come back round. Waiting
     // here instead would wedge the agent for good, since the only thing that
     // cancels `entry` is its own `Drop` and this frame holds an `Arc` to it.
-    let socket = entry.open_websocket(network, instance).await?;
+    let socket = entry.open_session(network, instance).await?;
     info!(url = %url, failures, "Connected to server");
 
     // A boot agent announces itself so the server can place a boot hold (and

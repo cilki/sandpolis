@@ -5,7 +5,6 @@ use crate::realm::RealmName;
 use crate::{ClusterId, InstanceId};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use futures_util::{SinkExt, StreamExt};
 use native_db::ToKey;
 use native_model::Model;
 use sandpolis_macros::data;
@@ -37,18 +36,16 @@ pub fn collected_responders() -> impl Iterator<Item = &'static dyn RegisterRespo
     inventory::iter::<ResponderRegistration>().map(|r| r.0)
 }
 
-#[cfg(any(feature = "agent", feature = "client", feature = "server"))]
-pub mod client;
 pub mod liveness;
 pub mod messages;
 pub mod ping;
 pub mod reachability;
-#[cfg(feature = "server")]
-pub mod server;
 #[cfg(any(feature = "agent", feature = "client", feature = "server"))]
 pub mod socket;
 pub mod stream;
 pub mod sync;
+#[cfg(any(feature = "agent", feature = "client", feature = "server"))]
+pub mod webtransport;
 
 #[data]
 #[derive(Default)]
@@ -76,10 +73,10 @@ pub struct NetworkManager {
     pub database: DatabaseManager,
 }
 
-/// How often each side of a websocket sends a keepalive ping.
+/// How often each side of a connection sends a keepalive ping.
 pub(crate) const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 
-/// How long a websocket may go without receiving anything before it's declared
+/// How long a connection may go without receiving anything before it's declared
 /// dead. A peer that vanishes without closing its socket (a partition, a killed
 /// machine) is otherwise indistinguishable from an idle one, and that is exactly
 /// the case where going offline needs to be noticed.
@@ -289,12 +286,10 @@ impl LatencyProbe {
     }
 }
 
-/// Connection to another instance that's suitable for running streams. The transport
-/// will either be a Websocket (when a server is one of the peers) or DTLS (when
-/// neither peer is a server).
-///
-/// For the DTLS case, reliable/orderly delivery is not guaranteed which fits
-/// the use case of direct connections.
+/// Connection to another instance that's suitable for running streams. The
+/// transport is a WebTransport session (see [`webtransport`]) when a server is
+/// one of the peers; a direct connection between two endpoints, when hole
+/// punching makes one possible, would be the other kind.
 pub struct InstanceConnection {
     pub data: Resident<ConnectionData>,
     pub realm: RealmName,

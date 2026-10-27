@@ -36,7 +36,7 @@ pub async fn start(command: crate::cli::Commands) -> anyhow::Result<std::process
         spawn_server_connection(state.clone(), cert.url()?);
     }
 
-    // The GUI establishes the sync websocket itself; a subcommand needs it
+    // The GUI establishes the sync session itself; a subcommand needs it
     // before its view can show anything.
     if let crate::cli::Commands::Client { .. } = command {
         tracing::info!("Starting Sandpolis client");
@@ -120,9 +120,9 @@ pub async fn ensure_authenticated(state: &InstanceState) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Establish the websocket to the first available server and install it for DB
+/// Establish the session to the first available server and install it for DB
 /// sync. Runs in the background until a server connection exists (the user logs
-/// in), then opens the websocket once and hands it to `sandpolis_client::sync`.
+/// in), then opens the session once and hands it to `sandpolis_client::sync`.
 pub fn spawn_client_sync(state: InstanceState) {
     let server = state.server.clone();
     let network = state.network.clone();
@@ -150,10 +150,10 @@ pub fn spawn_client_sync(state: InstanceState) {
                 if has_ws {
                     continue;
                 }
-                tracing::info!("spawn_client_sync: opening websocket");
-                match connection.open_websocket(&network, &instance).await {
+                tracing::info!("spawn_client_sync: opening session");
+                match connection.open_session(&network, &instance).await {
                     Ok(ic) => {
-                        tracing::info!("Established sync websocket to server");
+                        tracing::info!("Established sync session to server");
                         // Register every server for routing; the first also becomes
                         // the primary connection backing `sync::connection()`.
                         sandpolis_client::sync::register_connection(
@@ -193,10 +193,10 @@ pub fn spawn_client_sync(state: InstanceState) {
                     Err(e) if e.is::<sandpolis_server::AuthRequired>() => {
                         // The user hasn't logged in yet; the login dialog is
                         // (or will be) up, and this loop retries after it.
-                        tracing::debug!("Sync websocket awaiting login");
+                        tracing::debug!("Sync session awaiting login");
                     }
                     Err(e) => {
-                        tracing::info!(error = %e, "Failed to open sync websocket");
+                        tracing::info!(error = %e, "Failed to open sync session");
                     }
                 }
             }

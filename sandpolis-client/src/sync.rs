@@ -33,7 +33,7 @@ struct ServerConnectionEntry {
 }
 
 /// Record an established server connection for routing. Called for every server
-/// websocket the client brings up (including the primary). Idempotent per server.
+/// session the client brings up (including the primary). Idempotent per server.
 pub fn register_connection(url: ServerUrl, connection: Arc<InstanceConnection>) {
     // Servers always report their id in the upgrade response; a connection
     // without one can't be routed to and isn't worth tracking.
@@ -138,8 +138,8 @@ pub fn servers() -> Vec<(ServerUrl, InstanceId)> {
         .collect()
 }
 
-/// Install the client's database and websocket connection for sync. Called after
-/// the websocket to the server is established, and again after each reconnect.
+/// Install the client's database and session connection for sync. Called after
+/// the session to the server is established, and again after each reconnect.
 ///
 /// A reconnect swaps the socket underneath the existing handle and forgets the
 /// subscriptions that were open on the dead one, so the views that want them ask
@@ -245,7 +245,7 @@ pub fn unsubscribe_all(model_ids: impl IntoIterator<Item = u32>, instance: Optio
     }
 }
 
-/// The client's websocket connection to the server, if established. Used to open
+/// The client's session with the server, if established. Used to open
 /// relayed streams to agents (desktop, shell, filesystem).
 pub fn connection() -> Option<Arc<InstanceConnection>> {
     HANDLE

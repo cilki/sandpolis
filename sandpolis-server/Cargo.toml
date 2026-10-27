@@ -29,7 +29,6 @@ png = { workspace = true }
 rand = { workspace = true }
 regex = { workspace = true }
 reqwest = { workspace = true }
-reqwest-websocket = { workspace = true, optional = true }
 sandpolis-instance = { path = "../sandpolis-instance", version = "0.0.1" }
 sandpolis-macros = { path = "../sandpolis-macros", version = "0.0.1" }
 serde_bytes = { workspace = true }
@@ -39,6 +38,7 @@ serde_with = { workspace = true }
 serde = { workspace = true }
 tokio-util = { workspace = true }
 tokio = { workspace = true }
+wtransport = { workspace = true, optional = true }
 totp-rs = { version = "6.0.0", optional = true, features = [
   "otpauth",
   "zeroize",
@@ -49,7 +49,7 @@ validator = { workspace = true }
 [features]
 server = [
   "sandpolis-instance/server",
-  "dep:reqwest-websocket",
+  "dep:wtransport",
   "dep:argon2",
   "dep:totp-rs",
   "totp-rs?/gen_secret",
@@ -58,10 +58,10 @@ server = [
 ]
 client = [
   "sandpolis-instance/client",
+  "dep:wtransport",
   "dep:totp-rs",
   "totp-rs?/qr",
   "dep:argon2",
-  "dep:reqwest-websocket",
   "dep:bevy",
 ]
-agent = ["sandpolis-instance/agent", "dep:reqwest-websocket"]
+agent = ["sandpolis-instance/agent", "dep:wtransport"]

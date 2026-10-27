@@ -859,6 +859,28 @@ impl RealmCert {
         Ok(reqwest::Identity::from_pem(&bundle)?)
     }
 
+    /// The TLS configuration for dialing the server this certificate names:
+    /// trust the realm CA alone, and present this certificate.
+    ///
+    /// The `reqwest` client gets the same two things through
+    /// [`root_certificate`](Self::root_certificate) and
+    /// [`identity`](Self::identity); this is for the QUIC endpoint, which takes
+    /// `rustls` directly.
+    #[cfg(any(feature = "agent", feature = "client", feature = "server"))]
+    pub fn client_tls_config(&self) -> Result<rustls::ClientConfig> {
+        use rustls_pki_types::{CertificateDer, PrivateKeyDer};
+
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(CertificateDer::from(self.ca.clone()))?;
+
+        let key = PrivateKeyDer::try_from(self.key.clone().ok_or_else(|| anyhow!("No key"))?)
+            .map_err(|e| anyhow!("Invalid private key: {e}"))?;
+
+        Ok(rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_client_auth_cert(vec![CertificateDer::from(self.cert.clone())], key)?)
+    }
+
     /// Return when the certificate was generated.
     pub fn creation_time(&self) -> Result<i64> {
         Ok(X509Certificate::from_der(&self.cert)?

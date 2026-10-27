@@ -1246,7 +1246,7 @@ mod client {
         Ok(ExitCode::SUCCESS)
     }
 
-    /// Print every known agent instance as JSON. Waits for the sync websocket
+    /// Print every known agent instance as JSON. Waits for the sync session
     /// to be established (the connection to the server comes up
     /// asynchronously), then subscribes to the instance model and reads from
     /// the client database.

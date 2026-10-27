@@ -10,6 +10,8 @@ use reqwest::{ClientBuilder, Method};
 use sandpolis_instance::database::DatabaseManager;
 use sandpolis_instance::database::Resident;
 use sandpolis_instance::database::ResidentVec;
+#[cfg(any(feature = "agent", feature = "client", feature = "server"))]
+use sandpolis_instance::network::webtransport;
 use sandpolis_instance::network::{
     ConnectionData, InstanceConnection, NetworkManager, collected_responders,
 };
@@ -146,8 +148,8 @@ impl ServerManager {
     ///
     /// There's nothing to filter: every entry in `outbound` was dialed by this
     /// instance, and the only thing an instance dials is a server. The peer's id
-    /// isn't even known until its websocket upgrade reports it, which is after a
-    /// client needs the entry.
+    /// isn't even known until its session comes up, which is after a client
+    /// needs the entry.
     pub fn server_connections(&self) -> Vec<Arc<ServerConnection>> {
         self.outbound.read().unwrap().clone()
     }
@@ -184,6 +186,7 @@ impl ServerManager {
             runtime: self.runtime.clone(),
             strategy,
             client: Arc::new(tokio::sync::RwLock::new(Some(client_builder()?))),
+            dialer: webtransport::Dialer::new(&cert, &url)?,
             cancel: CancellationToken::new(),
             banner: ServerBanner::default(),
             realm: cert.name.clone(),
@@ -196,7 +199,7 @@ impl ServerManager {
     }
 
     /// Connect to a server in the default `Continuous` strategy (the live
-    /// connection is held open by the websocket).
+    /// connection is held open by the session).
     #[cfg(any(feature = "agent", feature = "client", feature = "server"))]
     pub async fn connect(&self, url: ServerUrl) -> Result<ServerConnection> {
         self.connect_with_strategy(url, ServerConnectStrategy::Continuous)
@@ -290,7 +293,12 @@ impl Validate for ServerBanner {
 
 #[derive(Clone)]
 pub struct ServerConnection {
+    /// For one-off requests (login, banner, enrollment), over HTTPS.
     client: Arc<tokio::sync::RwLock<Option<reqwest::Client>>>,
+
+    /// For the session that carries streams and sync, over WebTransport.
+    #[cfg(any(feature = "agent", feature = "client", feature = "server"))]
+    dialer: Arc<webtransport::Dialer>,
 
     /// The tokio runtime whose reactor this connection's sockets belong to;
     /// requests hop onto it so callers may poll from non-tokio executors
@@ -299,7 +307,7 @@ pub struct ServerConnection {
     pub strategy: ServerConnectStrategy,
     pub cancel: CancellationToken,
     pub banner: ServerBanner,
-    /// Active websocket connection used for streams / sync, once established.
+    /// The live session used for streams / sync, once established.
     pub inner: Arc<RwLock<Option<Arc<InstanceConnection>>>>,
     pub realm: RealmName,
     pub cluster_id: ClusterId,
@@ -327,7 +335,7 @@ impl Drop for ServerConnection {
 }
 
 impl ServerConnection {
-    /// The peer's instance id, known once the websocket upgrade has reported it.
+    /// The peer's instance id, known once the session is up.
     pub fn remote_instance(&self) -> Option<InstanceId> {
         self.inner
             .read()
@@ -336,80 +344,67 @@ impl ServerConnection {
             .and_then(|connection| connection.data.read().remote_instance)
     }
 
-    /// Establish the websocket connection used for streams and DB sync, retaining
-    /// it on this `ServerConnection`. The connection is deliberately *not* added
-    /// to `network.inbound`: that list backs the server-side stream relay, which
+    /// Establish the session used for streams and DB sync, retaining it on
+    /// this `ServerConnection`. The connection is deliberately *not* added to
+    /// `network.inbound`: that list backs the server-side stream relay, which
     /// forwards to instances attached to *this* server. A connection this
     /// instance dialed points the other way.
     #[cfg(any(feature = "client", feature = "agent", feature = "server"))]
-    pub async fn open_websocket(
+    pub async fn open_session(
         &self,
         network: &NetworkManager,
         instance: &sandpolis_instance::InstanceManager,
     ) -> Result<Arc<InstanceConnection>> {
-        use reqwest_websocket::Upgrade;
-
         let instance_id = instance.instance_id;
 
-        let url = format!("https://{}.{}/connect", self.cluster_id, self.realm);
-        let response = {
-            let guard = self.client.read().await;
-            let client = guard
-                .as_ref()
-                .ok_or_else(|| anyhow!("connection has no http client"))?;
-            let request = client
-                .get(&url)
-                .header("x-realm", self.realm.to_string())
-                .header("x-instance-id", instance_id.to_string());
+        let mut headers = vec![
+            ("x-realm".to_string(), self.realm.to_string()),
+            ("x-instance-id".to_string(), instance_id.to_string()),
+        ];
 
-            let request = match self.token.read().unwrap().as_ref() {
-                Some(token) => request.bearer_auth(&token.0),
-                None => request,
-            };
-
-            // Servers announce their stratum so the peer can enforce the
-            // network's shape; agents and clients send nothing here.
-            #[cfg(feature = "server")]
-            let request = match self.stratum.as_ref() {
-                Some(stratum) => request.header("x-stratum", stratum.header_value()),
-                None => request,
-            };
-
-            // A polling agent announces its schedule, because otherwise the
-            // server cannot tell it apart from an agent that died: both look
-            // like a connection that closed and did not come back.
-            let request = match &self.strategy {
-                ServerConnectStrategy::Polling { schedule, timeout } => request
-                    .header("x-poll-schedule", schedule.to_string())
-                    .header("x-poll-timeout", timeout.as_secs().to_string()),
-                ServerConnectStrategy::Continuous => request,
-            };
-
-            request.upgrade().send().await?
-        };
-
-        // The server refusing the upgrade for authentication means the user has
-        // to log in, which callers must be able to tell apart from the server
-        // being down.
-        if response.status() == reqwest::StatusCode::UNAUTHORIZED
-            || response.status() == reqwest::StatusCode::FORBIDDEN
-        {
-            return Err(AuthRequired.into());
+        if let Some(token) = self.token.read().unwrap().as_ref() {
+            headers.push(("authorization".to_string(), format!("Bearer {}", token.0)));
         }
 
-        // The server reports its own instance id in the upgrade response so we can
-        // record the real peer instead of a freshly-generated default (which would
-        // surface as a phantom graph node, growing on every reconnect).
-        let remote_instance = response
-            .headers()
-            .get("x-instance-id")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.parse::<InstanceId>().ok());
+        // Servers announce their stratum so the peer can enforce the
+        // network's shape; agents and clients send nothing here.
+        #[cfg(feature = "server")]
+        if let Some(stratum) = self.stratum.as_ref() {
+            headers.push(("x-stratum".to_string(), stratum.header_value().to_string()));
+        }
 
-        let socket = response.into_websocket().await?;
+        // A polling agent announces its schedule, because otherwise the
+        // server cannot tell it apart from an agent that died: both look
+        // like a connection that closed and did not come back.
+        if let ServerConnectStrategy::Polling { schedule, timeout } = &self.strategy {
+            headers.push(("x-poll-schedule".to_string(), schedule.to_string()));
+            headers.push((
+                "x-poll-timeout".to_string(),
+                timeout.as_secs().to_string(),
+            ));
+        }
+
+        let connection = self.dialer.connect(headers).await?;
+
+        // The server decides whether we may attach only once the session is
+        // up, since the realm comes off the certificate chain of the
+        // connection itself. It says yes by opening the stream, and no by
+        // closing with a code — of which "log in first" is the one callers
+        // must be able to tell apart from the server being down.
+        let (remote_instance, socket) = match webtransport::accept(&connection).await {
+            Ok(accepted) => accepted,
+            Err(e) => {
+                if e.downcast_ref::<webtransport::Refused>()
+                    .is_some_and(|refused| refused.code == webtransport::close::AUTH_REQUIRED)
+                {
+                    return Err(AuthRequired.into());
+                }
+                return Err(e);
+            }
+        };
 
         let mut cd = ConnectionData::scoped(instance_id);
-        cd.remote_instance = remote_instance;
+        cd.remote_instance = Some(remote_instance);
         cd.established = chrono::Utc::now();
         // Live connection bookkeeping is local state, allowed on a replica.
         let data = network
@@ -424,26 +419,32 @@ impl ServerConnection {
         let mut handlers: Vec<&dyn sandpolis_instance::network::RegisterResponders> =
             collected_responders().collect();
         handlers.push(&sync_reg);
-        let connection = InstanceConnection::socket(
+        let instance_connection = InstanceConnection::socket(
             socket,
             data,
             self.realm.clone(),
             self.cluster_id,
             &handlers,
         );
-        *self.inner.write().unwrap() = Some(connection.clone());
+        *self.inner.write().unwrap() = Some(instance_connection.clone());
 
         // Clean up after the socket however it ends: the row leaves the database
         // (which is what wakes the `connections.listen` reconcilers) and the slot
         // goes empty, so the reconnect loops here and in the client see there is
-        // work to do.
+        // work to do. The QUIC connection is held until then, since the socket
+        // task only holds the stream halves and dropping the last handle would
+        // close it under them.
         {
-            let cancel = connection.cancel.clone();
-            let row = connection.data.read()._id;
+            let cancel = instance_connection.cancel.clone();
+            let row = instance_connection.data.read()._id;
             let connections = network.connections.clone();
             let inner = self.inner.clone();
             tokio::spawn(async move {
-                cancel.cancelled().await;
+                tokio::select! {
+                    _ = cancel.cancelled() => {}
+                    _ = connection.closed() => {}
+                }
+                drop(connection);
                 if let Err(e) = connections.remove_local(row) {
                     debug!(error = %e, "Failed to remove a closed connection");
                 }
@@ -454,23 +455,23 @@ impl ServerConnection {
             });
         }
 
-        Ok(connection)
+        Ok(instance_connection)
     }
 
-    /// Close the sync websocket opened by [`open_websocket`](Self::open_websocket),
-    /// if one is active. Agents in `Polling` mode call this to end a check-in
+    /// Close the session opened by [`open_session`](Self::open_session), if
+    /// one is active. Agents in `Polling` mode call this to end a check-in
     /// window: the socket is cancelled and its bookkeeping (the tracked
     /// `ConnectionData` row) is cleaned up so repeated windows don't accumulate
     /// stale connections.
     #[cfg(any(feature = "client", feature = "agent", feature = "server"))]
-    pub fn close_websocket(&self) {
+    pub fn close_session(&self) {
         let Some(connection) = self.inner.write().unwrap().take() else {
             return;
         };
 
         // Cancel the socket task explicitly. `Drop` would also do this once every
         // Arc is gone, but a stream may still hold a reference. The janitor
-        // spawned by `open_websocket` removes the row once this lands.
+        // spawned by `open_session` removes the row once this lands.
         connection.cancel.cancel();
     }
 
@@ -502,9 +503,9 @@ impl ServerConnection {
 
         // One-off requests use the pooled `reqwest` client regardless of
         // strategy: it opens connections on demand, so this works the same
-        // whether the agent holds a `Continuous` websocket or only connects
+        // whether the agent holds a `Continuous` session or only connects
         // during a `Polling` window. The strategy only governs the lifetime of
-        // the long-lived sync websocket (see `open_websocket`).
+        // the long-lived session (see `open_session`).
         debug!(endpoint = %endpoint, "Sending request");
         let client = self
             .client
@@ -548,8 +549,8 @@ impl ServerConnection {
     }
 }
 
-/// The server refused the request or websocket upgrade for lack of a valid auth
-/// token: the caller should have the user log in (or log in again) and retry.
+/// The server refused the request or session for lack of a valid auth token:
+/// the caller should have the user log in (or log in again) and retry.
 #[derive(Debug)]
 pub struct AuthRequired;
 

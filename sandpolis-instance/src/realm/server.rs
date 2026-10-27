@@ -255,75 +255,80 @@ pub struct RealmAcceptor {
     notify_cert_failures: bool,
 }
 
+/// The TLS configuration for everything this server listens on: verify peers
+/// against every served realm's CA, and present each realm's server
+/// certificate by SNI.
+///
+/// One configuration serves every realm, so a certificate issued by *any*
+/// served realm's CA completes the handshake; which realm a peer actually
+/// belongs to is settled afterwards by [`authenticated_realm`].
+pub fn realm_tls_config(
+    instance_manager: &InstanceManager,
+    realms: &RealmManager,
+) -> Result<ServerConfig> {
+    let mut roots = RootCertStore::empty();
+    let mut sni_resolver = ResolvesServerCertUsingSni::new();
+
+    let config = ServerConfig::builder();
+
+    for realm in realms.iter() {
+        let db = &realm.database;
+        trace!(name = *realm.name, "Registering realm with server acceptor");
+
+        // These certificates are written once at startup and never change,
+        // so read them directly rather than holding residents on them.
+        let r = db.r_transaction()?;
+        let certs: Vec<RealmCert> = r.scan().primary()?.all()?.collect::<Result<Vec<_>, _>>()?;
+        drop(r);
+
+        // Add cluster cert as a CA cert to the root store
+        let cluster_cert = certs
+            .iter()
+            .find(|cert| cert.cert_type == RealmCertType::Cluster)
+            .ok_or_else(|| anyhow!("No CA certificate for realm: {}", realm.name))?;
+        roots.add(cluster_cert.cert.clone().try_into()?)?;
+
+        // Add server cert to the SNI resolver
+        let server_cert = certs
+            .iter()
+            .find(|cert| {
+                cert.cert_type == RealmCertType::Server
+                    && cert._instance_id == Some(instance_manager.instance_id)
+            })
+            .ok_or_else(|| anyhow!("No server certificate for realm: {}", realm.name))?;
+
+        let private_key = config.crypto_provider().key_provider.load_private_key(
+            server_cert
+                .key
+                .clone()
+                .ok_or_else(|| anyhow!("No server key"))?
+                .try_into()
+                .map_err(|_| anyhow!("Failed to parse key"))?,
+        )?;
+
+        let subject_name = server_cert.subject_name()?;
+
+        trace!(subject_name = %subject_name, "Adding SNI resolver");
+        sni_resolver.add(
+            &subject_name,
+            rustls::sign::CertifiedKey::new(
+                vec![server_cert.cert.clone().try_into()?],
+                private_key,
+            ),
+        )?;
+    }
+
+    Ok(config
+        .with_client_cert_verifier(WebPkiClientVerifier::builder(Arc::new(roots)).build()?)
+        .with_cert_resolver(Arc::new(sni_resolver)))
+}
+
 impl RealmAcceptor {
-    pub async fn new(
-        instance_manager: InstanceManager,
-        realms: RealmManager,
-        notify_cert_failures: bool,
-    ) -> Result<Self> {
-        let mut roots = RootCertStore::empty();
-        let mut sni_resolver = ResolvesServerCertUsingSni::new();
-
-        let config = ServerConfig::builder();
-
-        for realm in realms.iter() {
-            let db = &realm.database;
-            trace!(name = *realm.name, "Registering realm with server acceptor");
-
-            // These certificates are written once at startup and never change,
-            // so read them directly rather than holding residents on them.
-            let r = db.r_transaction()?;
-            let certs: Vec<RealmCert> =
-                r.scan().primary()?.all()?.collect::<Result<Vec<_>, _>>()?;
-            drop(r);
-
-            // Add cluster cert as a CA cert to the root store
-            let cluster_cert = certs
-                .iter()
-                .find(|cert| cert.cert_type == RealmCertType::Cluster)
-                .ok_or_else(|| anyhow!("No CA certificate for realm: {}", realm.name))?;
-            roots.add(cluster_cert.cert.clone().try_into()?)?;
-
-            // Add server cert to the SNI resolver
-            let server_cert = certs
-                .iter()
-                .find(|cert| {
-                    cert.cert_type == RealmCertType::Server
-                        && cert._instance_id == Some(instance_manager.instance_id)
-                })
-                .ok_or_else(|| anyhow!("No server certificate for realm: {}", realm.name))?;
-
-            let private_key = config.crypto_provider().key_provider.load_private_key(
-                server_cert
-                    .key
-                    .clone()
-                    .ok_or_else(|| anyhow!("No server key"))?
-                    .try_into()
-                    .map_err(|_| anyhow!("Failed to parse key"))?,
-            )?;
-
-            let subject_name = server_cert.subject_name()?;
-
-            trace!(subject_name = %subject_name, "Adding SNI resolver");
-            sni_resolver.add(
-                &subject_name,
-                rustls::sign::CertifiedKey::new(
-                    vec![server_cert.cert.clone().try_into()?],
-                    private_key,
-                ),
-            )?;
-        }
-
-        Ok(Self {
-            acceptor: RustlsAcceptor::new(RustlsConfig::from_config(Arc::new(
-                config
-                    .with_client_cert_verifier(
-                        WebPkiClientVerifier::builder(Arc::new(roots)).build()?,
-                    )
-                    .with_cert_resolver(Arc::new(sni_resolver)),
-            ))),
+    pub fn new(config: ServerConfig, notify_cert_failures: bool) -> Self {
+        Self {
+            acceptor: RustlsAcceptor::new(RustlsConfig::from_config(Arc::new(config))),
             notify_cert_failures,
-        })
+        }
     }
 }
 
@@ -341,6 +346,18 @@ fn is_cert_auth_error(error: &io::Error) -> bool {
             )
         })
 }
+
+/// A rejected handshake, raised to the user when the realm configs ask for it.
+pub fn notify_cert_failure(error: &dyn std::fmt::Display) {
+    crate::notification::notify(
+        crate::notification::Notification::warn(
+            "Network",
+            "Connection rejected: certificate authentication failed",
+        )
+        .body(error.to_string()),
+    );
+}
+
 impl<I, S> Accept<I, S> for RealmAcceptor
 where
     I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -360,13 +377,7 @@ where
                 Err(e) => {
                     debug!("TLS accept failed: {}", e);
                     if notify_cert_failures && is_cert_auth_error(&e) {
-                        crate::notification::notify(
-                            crate::notification::Notification::warn(
-                                "Network",
-                                "Connection rejected: certificate authentication failed",
-                            )
-                            .body(e.to_string()),
-                        );
+                        notify_cert_failure(&e);
                     }
                     return Err(e);
                 }
@@ -418,25 +429,24 @@ where
     }
 }
 
-/// Work out which realm a request is authenticated for.
+/// Work out which realm a peer is authenticated for.
 ///
 /// The realm comes from the common name of the certificate the connection
 /// presented, which is the server URL it was minted for and therefore names
-/// exactly one realm.
+/// exactly one realm. Both listeners resolve it here: the HTTP one from the
+/// acceptor's [`TlsData`] in [`auth_middleware`], the WebTransport one from
+/// the session's verified chain in [`session_realm`].
 ///
-/// A peer may also state a realm in the `x-realm` header, and a legitimate one
+/// A peer may also state a realm (the `x-realm` header), and a legitimate one
 /// always states the realm of the very certificate it is connecting with (both
 /// come from the same realm cert). Stating a different one is refused rather
 /// than ignored, so a peer can never operate on a realm its certificate was not
 /// issued by.
-fn authenticated_realm(
-    tls_data: &TlsData,
-    headers: &axum::http::HeaderMap,
+pub fn authenticated_realm(
+    peer_certificates: Option<&[CertificateDer<'_>]>,
+    stated: Option<&str>,
 ) -> Result<RealmName, &'static str> {
-    let peer_certificates = tls_data
-        .peer_certificates
-        .as_ref()
-        .ok_or("missing client certificate")?;
+    let peer_certificates = peer_certificates.ok_or("missing client certificate")?;
 
     // Take first client certificate
     let cert = X509Certificate::from_der(
@@ -462,12 +472,10 @@ fn authenticated_realm(
         .parse::<ServerUrl>()
         .map_err(|_| "invalid common name in client certificate")?;
 
-    if let Some(stated) = headers.get(RealmName::name()) {
+    if let Some(stated) = stated {
         let stated = stated
-            .to_str()
-            .ok()
-            .and_then(|stated| stated.parse::<RealmName>().ok())
-            .ok_or("invalid realm header")?;
+            .parse::<RealmName>()
+            .map_err(|_| "invalid realm header")?;
 
         if stated != url.realm {
             return Err("realm header does not match the client certificate");
@@ -477,36 +485,68 @@ fn authenticated_realm(
     Ok(url.realm)
 }
 
+/// [`authenticated_realm`] for a WebTransport session, whose verified chain
+/// lives on the connection rather than in a request extension.
+pub fn session_realm(
+    connection: &wtransport::Connection,
+    stated: Option<&str>,
+) -> Result<RealmName, &'static str> {
+    let chain: Option<Vec<CertificateDer<'static>>> = connection.peer_identity().map(|chain| {
+        chain
+            .as_slice()
+            .iter()
+            .map(|cert| CertificateDer::from(cert.der().to_vec()))
+            .collect()
+    });
+    authenticated_realm(chain.as_deref(), stated)
+}
+
+/// A peer whose certificate resolved to no realm. Logs the canonical line the
+/// shipped fail2ban filter matches, and raises a notification when the realm
+/// configs ask for one.
+pub fn report_unauthenticated(
+    peer: Option<std::net::IpAddr>,
+    reason: &'static str,
+    notify_cert_failures: bool,
+) {
+    // Canonical line matched by the shipped fail2ban filter
+    if let Some(peer) = peer {
+        warn!(peer = %peer, reason = %reason, "Authentication failure");
+    }
+
+    if notify_cert_failures {
+        let mut notification = crate::notification::Notification::warn(
+            "Network",
+            "Connection rejected: invalid client certificate",
+        );
+        if let Some(peer) = peer {
+            notification = notification.body(format!("{reason} (peer {peer})"));
+        } else {
+            notification = notification.body(reason);
+        }
+        crate::notification::notify(notification);
+    }
+}
+
 pub async fn auth_middleware(
     State(notify_cert_failures): State<bool>,
     Extension(tls_data): Extension<TlsData>,
     mut request: Request,
     next: Next,
 ) -> Result<Response, &'static str> {
-    let realm = authenticated_realm(&tls_data, request.headers()).inspect_err(|reason| {
-        let peer = request
-            .extensions()
-            .get::<ConnectInfo<std::net::SocketAddr>>()
-            .map(|ConnectInfo(peer)| peer.ip());
-
-        // Canonical line matched by the shipped fail2ban filter
-        if let Some(peer) = peer {
-            warn!(peer = %peer, reason = %reason, "Authentication failure");
-        }
-
-        if notify_cert_failures {
-            let mut notification = crate::notification::Notification::warn(
-                "Network",
-                "Connection rejected: invalid client certificate",
-            );
-            if let Some(peer) = peer {
-                notification = notification.body(format!("{reason} (peer {peer})"));
-            } else {
-                notification = notification.body(*reason);
-            }
-            crate::notification::notify(notification);
-        }
-    })?;
+    let realm = request
+        .headers()
+        .get(RealmName::name())
+        .map(|value| value.to_str().map_err(|_| "invalid realm header"))
+        .transpose()
+        .and_then(|stated| authenticated_realm(tls_data.peer_certificates.as_deref(), stated))
+        .inspect_err(|reason| {
+            let peer = request
+                .extensions()
+                .get::<ConnectInfo<std::net::SocketAddr>>()
+                .map(|ConnectInfo(peer)| peer.ip());
+            report_unauthenticated(peer, reason, notify_cert_failures);
+        })?;
 
     // Pass authentication to routes
     request.extensions_mut().insert(AuthenticatedRealm(realm));
@@ -515,39 +555,27 @@ pub async fn auth_middleware(
 }
 
 #[cfg(test)]
-mod test_auth_middleware {
+mod test_authenticated_realm {
     use super::*;
-    use axum::http::HeaderMap;
 
     /// A realm cert as a peer presents it: the endpoint certificate `realm` at
     /// `url` would hand to a server.
-    fn endpoint(realm: &str) -> Result<TlsData> {
+    fn endpoint(realm: &str) -> Result<Vec<CertificateDer<'static>>> {
         let url: ServerUrl = format!("127.0.0.1:8768/{realm}").parse()?;
         let ca = RealmCert::new_cluster(ClusterId::default(), realm.parse()?)?;
-        Ok(TlsData {
-            peer_certificates: Some(vec![ca.endpoint_cert(&url)?.cert.try_into()?]),
-        })
-    }
-
-    fn header(realm: &str) -> HeaderMap {
-        let mut headers = HeaderMap::new();
-        headers.insert(RealmName::name(), realm.parse().unwrap());
-        headers
+        Ok(vec![ca.endpoint_cert(&url)?.cert.try_into()?])
     }
 
     /// The realm is the one the certificate was issued for, whether or not the
     /// peer bothers to state it.
     #[test]
     fn realm_comes_from_the_certificate() -> Result<()> {
-        let tls = endpoint("alpha")?;
+        let chain = endpoint("alpha")?;
         let expected: RealmName = "alpha".parse()?;
 
+        assert_eq!(authenticated_realm(Some(&chain), None).unwrap(), expected);
         assert_eq!(
-            authenticated_realm(&tls, &HeaderMap::new()).unwrap(),
-            expected
-        );
-        assert_eq!(
-            authenticated_realm(&tls, &header("alpha")).unwrap(),
+            authenticated_realm(Some(&chain), Some("alpha")).unwrap(),
             expected
         );
         Ok(())
@@ -561,11 +589,15 @@ mod test_auth_middleware {
     /// certificate authority the request reaches.
     #[test]
     fn stated_realm_cannot_cross_realms() -> Result<()> {
-        let tls = endpoint("alpha")?;
+        let chain = endpoint("alpha")?;
 
         assert_eq!(
-            authenticated_realm(&tls, &header("default")),
+            authenticated_realm(Some(&chain), Some("default")),
             Err("realm header does not match the client certificate")
+        );
+        assert_eq!(
+            authenticated_realm(Some(&chain), Some("not a realm name")),
+            Err("invalid realm header")
         );
         Ok(())
     }
@@ -574,19 +606,12 @@ mod test_auth_middleware {
     /// this means a route escaped the acceptor rather than a peer opting out.
     #[test]
     fn missing_certificate_is_refused() {
-        let tls = TlsData {
-            peer_certificates: None,
-        };
         assert_eq!(
-            authenticated_realm(&tls, &HeaderMap::new()),
+            authenticated_realm(None, None),
             Err("missing client certificate")
         );
-
-        let tls = TlsData {
-            peer_certificates: Some(Vec::new()),
-        };
         assert_eq!(
-            authenticated_realm(&tls, &HeaderMap::new()),
+            authenticated_realm(Some(&[]), None),
             Err("missing client certificate")
         );
     }
@@ -598,16 +623,15 @@ mod test_auth_middleware {
     #[test]
     fn server_certificate_has_no_realm() -> Result<()> {
         let ca = RealmCert::new_cluster(ClusterId::default(), "alpha".parse()?)?;
-        let tls = TlsData {
-            peer_certificates: Some(vec![ca.server_cert(ServerId::random())?.cert.try_into()?]),
-        };
+        let chain: Vec<CertificateDer<'static>> =
+            vec![ca.server_cert(ServerId::random())?.cert.try_into()?];
 
         assert_eq!(
-            authenticated_realm(&tls, &HeaderMap::new()),
+            authenticated_realm(Some(&chain), None),
             Err("invalid common name in client certificate")
         );
         assert_eq!(
-            authenticated_realm(&tls, &header("alpha")),
+            authenticated_realm(Some(&chain), Some("alpha")),
             Err("invalid common name in client certificate")
         );
         Ok(())

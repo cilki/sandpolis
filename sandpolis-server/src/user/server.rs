@@ -3,7 +3,7 @@ use super::{ClientAuthToken, UserData, UserManager, UserName};
 use crate::login::LoginPassword;
 use anyhow::{Result, anyhow, bail};
 use aws_lc_rs::pbkdf2;
-use axum::extract::{ConnectInfo, FromRequestParts, State, WebSocketUpgrade};
+use axum::extract::FromRequestParts;
 use axum::http::{StatusCode, request::Parts};
 use axum::RequestPartsExt;
 use axum_extra::TypedHeader;
@@ -12,12 +12,12 @@ use jsonwebtoken::{Validation, decode};
 use native_db::ToKey;
 use native_model::Model;
 use rand::RngExt;
-use sandpolis_instance::Permission;
 use sandpolis_instance::database::DataScope;
 use sandpolis_instance::network::ConnectionData;
 use sandpolis_instance::network::InstanceConnection;
 use sandpolis_instance::realm::RealmName;
 use sandpolis_instance::realm::server::AuthenticatedRealm;
+use sandpolis_instance::{InstanceId, Permission};
 use sandpolis_macros::data;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
@@ -399,66 +399,154 @@ impl FromRequestParts<UserManager> for Claims {
     }
 }
 
-/// Accept a websocket from a client, agent, or local stratum server.
+/// Accept attachments on the server's WebTransport endpoint, forever.
+///
+/// Each session is handled on its own task, so a slow handshake never holds
+/// up the next one.
+pub async fn serve_sessions(
+    endpoint: wtransport::Endpoint<wtransport::endpoint::endpoint_side::Server>,
+    state: UserManager,
+    notify_cert_failures: bool,
+) {
+    loop {
+        let incoming = endpoint.accept().await;
+        let state = state.clone();
+        tokio::spawn(async move {
+            accept_session(incoming, state, notify_cert_failures).await;
+        });
+    }
+}
+
+/// Whether a failed QUIC handshake was the peer failing *certificate*
+/// authentication, as opposed to unrelated noise (port scanners, protocol
+/// mismatches) that shouldn't reach the user.
+///
+/// A TLS alert closes a QUIC connection with transport error code
+/// `0x100 + alert` (RFC 9001 §4.8). `wtransport` keeps the code private but
+/// prints it after the reason as `(code: N)`, which is what is read here.
+fn is_cert_auth_error(error: &wtransport::error::ConnectionError) -> bool {
+    match error {
+        wtransport::error::ConnectionError::QuicProto(proto) => {
+            is_cert_auth_close(&proto.to_string())
+        }
+        _ => false,
+    }
+}
+
+/// [`is_cert_auth_error`] on the text of a QUIC protocol error.
+fn is_cert_auth_close(text: &str) -> bool {
+    let Some(code) = text
+        .rsplit_once("(code: ")
+        .and_then(|(_, rest)| rest.strip_suffix(')'))
+        .and_then(|code| code.parse::<u64>().ok())
+    else {
+        return false;
+    };
+
+    // bad_certificate, unsupported_certificate, certificate_revoked,
+    // certificate_expired, certificate_unknown, unknown_ca, certificate_required
+    matches!(
+        code.checked_sub(0x100).filter(|alert| *alert <= 0xff),
+        Some(42..=46 | 48 | 116)
+    )
+}
+
+/// Accept one session from a client, agent, or local stratum server.
 ///
 /// Authentication is by realm cert, and the realm this connection lands in is
-/// the one that certificate names (resolved upstream by `auth_middleware`) —
-/// never one the peer asks for, since that realm decides which database it gets
-/// to serve and subscribe to. The peer reports its own `InstanceId` via `x-instance-id`
-/// so the server can tell agents (whose own data it pulls, directly or through
-/// the ownership machinery) from clients (which subscribe to subsets). The
-/// resulting connection is retained in `network.inbound`; dropping it would
-/// cancel the socket.
+/// the one that certificate names — never one the peer asks for, since that
+/// realm decides which database it gets to serve and subscribe to. The
+/// certificate chain is on the connection rather than the request, so the
+/// session is accepted first and a peer that doesn't belong is closed
+/// afterwards with one of the [`close`] codes.
 ///
-/// The peer also reports its stratum via `x-stratum`, which enforces the shape of
-/// the network: there is exactly one global stratum server, and local stratum
-/// servers only ever connect upward.
+/// The peer reports its own `InstanceId` via `x-instance-id` so the server can
+/// tell agents (whose own data it pulls, directly or through the ownership
+/// machinery) from clients (which subscribe to subsets). The resulting
+/// connection is retained in `network.inbound`; dropping it would cancel the
+/// socket.
+///
+/// The peer also reports its stratum via `x-stratum`, which enforces the shape
+/// of the network: there is exactly one global stratum server, and local
+/// stratum servers only ever connect upward.
+///
+/// [`close`]: sandpolis_instance::network::webtransport::close
 // TODO: verify the reported instance id against the connection's certificate.
-#[axum_macros::debug_handler]
-pub async fn connect(
-    State(state): State<UserManager>,
-    AuthenticatedRealm(realm): AuthenticatedRealm,
-    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
-    headers: axum::http::HeaderMap,
-    ws: WebSocketUpgrade,
-) -> axum::response::Response {
-    use axum::response::IntoResponse;
+async fn accept_session(
+    incoming: wtransport::endpoint::IncomingSession,
+    state: UserManager,
+    notify_cert_failures: bool,
+) {
+    use sandpolis_instance::network::webtransport::{self, close};
+    use sandpolis_instance::realm::server::{
+        notify_cert_failure, report_unauthenticated, session_realm,
+    };
 
-    let network = state.network.clone();
-    let cluster_id = state.instance.cluster_id;
-    let local_instance = state.instance.instance_id;
-    let stratum = state.stratum.clone();
-    let ownership = state.ownership.clone();
-    let remote_instance = headers
-        .get("x-instance-id")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse::<sandpolis_instance::InstanceId>().ok());
-    let peer_stratum = headers
-        .get("x-stratum")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
+    let peer = incoming.remote_address();
+
+    let request = match incoming.await {
+        Ok(request) => request,
+        Err(e) => {
+            tracing::debug!(%peer, error = %e, "Session handshake failed");
+            if notify_cert_failures && is_cert_auth_error(&e) {
+                notify_cert_failure(&e);
+            }
+            return;
+        }
+    };
+
+    if request.path() != webtransport::CONNECT_PATH {
+        tracing::debug!(%peer, path = request.path(), "Refusing session on an unknown path");
+        request.not_found().await;
+        return;
+    }
+
+    // Everything the dialer says about itself, read before the session is
+    // accepted. Header names arrive lowercased.
+    let headers = request.headers().clone();
+    let header = |name: &str| headers.get(name).map(String::as_str);
+
+    let remote_instance = header("x-instance-id").and_then(|s| s.parse::<InstanceId>().ok());
+    let peer_stratum = header("x-stratum").unwrap_or("").to_string();
 
     // A polling peer says how often it means to come back, which is the only
     // way this server can tell "away until the next window" from "gone".
-    let poll = headers
-        .get("x-poll-schedule")
-        .and_then(|v| v.to_str().ok())
+    let poll = header("x-poll-schedule")
         .filter(|schedule| {
             !schedule.is_empty()
-                && schedule.len()
-                    <= sandpolis_instance::network::liveness::MAX_SCHEDULE_LEN
+                && schedule.len() <= sandpolis_instance::network::liveness::MAX_SCHEDULE_LEN
         })
-        .map(|schedule| sandpolis_instance::network::liveness::PollAnnouncement {
-            schedule: schedule.to_string(),
-            timeout: std::time::Duration::from_secs(
-                headers
-                    .get("x-poll-timeout")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(0),
-            ),
-        });
+        .map(
+            |schedule| sandpolis_instance::network::liveness::PollAnnouncement {
+                schedule: schedule.to_string(),
+                timeout: std::time::Duration::from_secs(
+                    header("x-poll-timeout")
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(0),
+                ),
+            },
+        );
+
+    let token = header("authorization")
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::to_string);
+
+    let connection = match request.accept().await {
+        Ok(connection) => connection,
+        Err(e) => {
+            tracing::debug!(%peer, error = %e, "Session not established");
+            return;
+        }
+    };
+
+    let realm = match session_realm(&connection, header("x-realm")) {
+        Ok(realm) => realm,
+        Err(reason) => {
+            report_unauthenticated(Some(peer.ip()), reason, notify_cert_failures);
+            connection.close(close::UNAUTHENTICATED, reason.as_bytes());
+            return;
+        }
+    };
 
     // A peer identifying as a server, by its instance id or its stratum header.
     // The header is what a *server* build sends; the id bit is the fallback.
@@ -485,12 +573,8 @@ pub async fn connect(
     // from `/user/login`; its user decides which streams the connection may
     // open. A realm with no users is open, preserving the zero-setup workflow.
     let user_gate = if peer_is_client && state.users_configured(&realm) {
-        let token = headers
-            .get(axum::http::header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "));
-
         let claims = token
+            .as_deref()
             .zip(state.jwt_keys.get(&realm))
             .and_then(|(token, (_, decoding))| {
                 decode::<Claims>(token, decoding, &Validation::default()).ok()
@@ -500,7 +584,8 @@ pub async fn connect(
         let Some(claims) = claims else {
             // Canonical line matched by the shipped fail2ban filter
             warn!(peer = %peer.ip(), "Authentication failure");
-            return (StatusCode::UNAUTHORIZED, "login required").into_response();
+            connection.close(close::AUTH_REQUIRED, b"login required");
+            return;
         };
 
         // The gate reads the live user record on every check rather than the
@@ -538,113 +623,160 @@ pub async fn connect(
         tracing::warn!(
             "Rejecting connection from another global stratum server; a network has exactly one"
         );
-        return (
-            StatusCode::CONFLICT,
-            "this network already has a global stratum server",
-        )
-            .into_response();
+        connection.close(
+            close::CONFLICT,
+            b"this network already has a global stratum server",
+        );
+        return;
     }
 
     // Local stratum servers connect upward only, never to each other, so an
     // inbound server connection here means someone is pointed at the wrong host.
-    if stratum.is_local() && peer_is_server {
+    if state.stratum.is_local() && peer_is_server {
         tracing::warn!(
             "Rejecting inbound server connection: local stratum servers connect upward only"
         );
-        return (
-            StatusCode::CONFLICT,
-            "connect servers to the global stratum server, not a local stratum server",
-        )
-            .into_response();
+        connection.close(
+            close::CONFLICT,
+            b"connect servers to the global stratum server, not a local stratum server",
+        );
+        return;
     }
 
-    let mut response = ws.on_upgrade(move |socket| async move {
-        let mut cd = ConnectionData::scoped(local_instance);
-        cd.remote_instance = remote_instance;
-        // Where the peer actually is, as opposed to the instance id it reports.
-        // The connection is the only place this is known, and it is what the
-        // location subsystem resolves and the instance panel displays.
-        cd.remote_socket = Some(peer);
-        cd.established = chrono::Utc::now();
-        let instance = cd.remote_instance;
+    // The peer is in: open the stream and say who we are on it, which is what
+    // the dialer has been waiting for.
+    let socket = match webtransport::open(&connection, state.instance.instance_id).await {
+        Ok(socket) => socket,
+        Err(e) => {
+            tracing::debug!(%peer, error = %e, "Session stream not opened");
+            return;
+        }
+    };
 
-        // Live connection bookkeeping is local state, allowed on a replica.
-        let data = network.connections.push_local(cd).unwrap();
+    let network = state.network.clone();
+    let mut cd = ConnectionData::scoped(state.instance.instance_id);
+    cd.remote_instance = remote_instance;
+    // Where the peer actually is, as opposed to the instance id it reports.
+    // The connection is the only place this is known, and it is what the
+    // location subsystem resolves and the instance panel displays.
+    cd.remote_socket = Some(peer);
+    cd.established = chrono::Utc::now();
 
-        info!(
-            kind = peer_kind,
-            instance = ?instance,
-            realm = %realm,
-            peer = %peer,
-            "Instance connected"
+    // Live connection bookkeeping is local state, allowed on a replica.
+    let data = network.connections.push_local(cd).unwrap();
+
+    info!(
+        kind = peer_kind,
+        instance = ?remote_instance,
+        realm = %realm,
+        peer = %peer,
+        "Instance connected"
+    );
+
+    // Serve this peer's subscriptions from our local realm database.
+    let realm_db = network.database.realm(realm.clone()).unwrap();
+    let sync_reg =
+        sandpolis_instance::network::sync::SyncResponderRegistration::new(realm_db.clone());
+
+    let mut handlers: Vec<&dyn sandpolis_instance::network::RegisterResponders> =
+        sandpolis_instance::network::collected_responders().collect();
+    handlers.push(&sync_reg);
+
+    let instance_connection = InstanceConnection::socket(
+        socket,
+        data,
+        realm,
+        state.instance.cluster_id,
+        &handlers,
+    );
+
+    if let Some(poll) = poll {
+        let _ = instance_connection.poll.set(poll);
+    }
+
+    // Let this connection relay streams to other connections (client -> agent).
+    instance_connection
+        .streams
+        .set_relay(std::sync::Arc::downgrade(&network.relay));
+
+    // Streams this client opens (relayed or answered here) are checked
+    // against its user's permissions.
+    if let Some(gate) = user_gate {
+        instance_connection.streams.set_gate(gate);
+    }
+
+    // Likewise server-only: advertising lets a peer claim to carry traffic
+    // for other instances, and an ownership claim carries the right to
+    // write an instance's data into the estate — an agent or client must
+    // never be able to do either.
+    if peer_is_server {
+        sandpolis_instance::network::reachability::accept_advertisements(
+            &instance_connection,
+            network.relay.clone(),
         );
+        crate::ownership::accept_claims(
+            &instance_connection,
+            state.ownership.clone(),
+            realm_db.clone(),
+        );
+    }
 
-        // Serve this peer's subscriptions from our local realm database.
-        let realm_db = network.database.realm(realm.clone()).unwrap();
-        let sync_reg =
-            sandpolis_instance::network::sync::SyncResponderRegistration::new(realm_db.clone());
-
-        let mut handlers: Vec<&dyn sandpolis_instance::network::RegisterResponders> =
-            sandpolis_instance::network::collected_responders().collect();
-        handlers.push(&sync_reg);
-
-        let connection = InstanceConnection::socket(socket, data, realm, cluster_id, &handlers);
-
-        if let Some(poll) = poll {
-            let _ = connection.poll.set(poll);
+    // Pull everything an attached agent owns (the long-lived sync). The
+    // filter is scoped to the agent's own instance, so a peer can never
+    // smuggle in records belonging to someone else. A server peer's data
+    // arrives through the ownership machinery instead.
+    if let Some(id) = remote_instance.filter(|id| id.is_agent()) {
+        if state.stratum.is_local() {
+            // Ownership decides: the reconciler (`ownership::maintain_agent_sync`)
+            // opens this pull once the scope is granted and hydrated.
+        } else if let Err(e) = instance_connection
+            .open_sync(
+                realm_db,
+                vec![sandpolis_instance::database::sync::SyncFilter::instance(id)],
+            )
+            .await
+        {
+            tracing::warn!(error = %e, "Failed to open agent sync stream");
         }
+    }
 
-        // Let this connection relay streams to other connections (client -> agent).
-        connection
-            .streams
-            .set_relay(std::sync::Arc::downgrade(&network.relay));
-
-        // Streams this client opens (relayed or answered here) are checked
-        // against its user's permissions.
-        if let Some(gate) = user_gate {
-            connection.streams.set_gate(gate);
+    // The QUIC connection has to outlive the socket task, which only holds the
+    // stream halves; dropping the last handle would close it under them.
+    let cancel = instance_connection.cancel.clone();
+    tokio::spawn(async move {
+        tokio::select! {
+            _ = cancel.cancelled() => {}
+            _ = connection.closed() => {}
         }
-
-        // Likewise server-only: advertising lets a peer claim to carry traffic
-        // for other instances, and an ownership claim carries the right to
-        // write an instance's data into the estate — an agent or client must
-        // never be able to do either.
-        if peer_is_server {
-            sandpolis_instance::network::reachability::accept_advertisements(
-                &connection,
-                network.relay.clone(),
-            );
-            crate::ownership::accept_claims(&connection, ownership.clone(), realm_db.clone());
-        }
-
-        // Pull everything an attached agent owns (the long-lived sync). The
-        // filter is scoped to the agent's own instance, so a peer can never
-        // smuggle in records belonging to someone else. A server peer's data
-        // arrives through the ownership machinery instead.
-        if let Some(id) = remote_instance.filter(|id| id.is_agent()) {
-            if stratum.is_local() {
-                // Ownership decides: the reconciler (`ownership::maintain_agent_sync`)
-                // opens this pull once the scope is granted and hydrated.
-            } else if let Err(e) = connection
-                .open_sync(
-                    realm_db,
-                    vec![sandpolis_instance::database::sync::SyncFilter::instance(id)],
-                )
-                .await
-            {
-                tracing::warn!(error = %e, "Failed to open agent sync stream");
-            }
-        }
-
-        network.track_inbound(connection);
+        drop(connection);
     });
 
-    // Report our own instance id back to the dialer (mirrors the `x-instance-id`
-    // request header) so it can record `remote_instance` instead of leaving a
-    // freshly-generated default, which would surface as a phantom graph node.
-    if let Ok(value) = axum::http::HeaderValue::from_str(&local_instance.to_string()) {
-        response.headers_mut().insert("x-instance-id", value);
-    }
+    network.track_inbound(instance_connection);
+}
 
-    response
+#[cfg(test)]
+mod test_cert_auth_error {
+    use super::*;
+
+    /// A handshake that failed on the certificate is told apart from one that
+    /// failed for any other reason by the TLS alert in the QUIC error code,
+    /// which `wtransport` prints after the reason.
+    #[test]
+    fn classifies_by_tls_alert() {
+        // certificate_required (116) and unknown_ca (48): a peer with no
+        // certificate, and one from another CA — as the handshake reports them.
+        assert!(is_cert_auth_close("peer sent no certificates (code: 372)"));
+        assert!(is_cert_auth_close(
+            "invalid peer certificate: UnknownIssuer (code: 304)"
+        ));
+
+        // handshake_failure (40), a non-crypto transport error, and errors
+        // that carry no code are noise.
+        assert!(!is_cert_auth_close("handshake failure (code: 296)"));
+        assert!(!is_cert_auth_close("protocol violation (code: 10)"));
+        assert!(!is_cert_auth_close("connection has been reset"));
+        assert!(!is_cert_auth_error(
+            &wtransport::error::ConnectionError::TimedOut
+        ));
+    }
 }

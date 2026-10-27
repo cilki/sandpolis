@@ -210,7 +210,7 @@ fn update_session_summaries(
     streams: Res<ShellStreams>,
     mut labels: Query<(&SessionSummary, &mut Text)>,
 ) {
-    // The websocket comes up asynchronously after startup, so a panel expanded
+    // The session comes up asynchronously after startup, so a panel expanded
     // early has nothing to open a session over yet. Saying so beats "no
     // session", which reads as "and nothing is trying to change that".
     let connected = sandpolis_client::sync::connection().is_some();
@@ -288,7 +288,7 @@ fn start_pending_sessions(
             // Keep the marker and come back next frame. Recording a session here
             // would be worse than waiting: the terminal would look live, take
             // keystrokes nothing reads, and block the retry that would have
-            // worked once the websocket came up.
+            // worked once the session came up.
             SessionStart::NotReady => continue,
             SessionStart::Unsupported => {
                 // Nothing this layer can drive on the other end (an account
@@ -353,7 +353,7 @@ enum SessionStart {
     /// The stream is open; here is where its output will arrive.
     Opened(UnboundedReceiver<ShellEvent>),
     /// There's no server connection yet. Worth trying again shortly — the
-    /// websocket comes up asynchronously after startup, so a panel expanded in
+    /// session comes up asynchronously after startup, so a panel expanded in
     /// the first second of a run lands here.
     NotReady,
     /// Nothing this layer can open a shell to, now or later.

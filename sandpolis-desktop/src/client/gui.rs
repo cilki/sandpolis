@@ -4,7 +4,7 @@
 //!
 //! The panel wires the full client-side stream pipeline. As soon as it expands
 //! it opens a relayed stream to the agent with [`sandpolis_client::sync`]'s
-//! websocket connection (`open_stream_to`): the server routes requests to the
+//! session (`open_stream_to`): the server routes requests to the
 //! target agent and responses back. [`DesktopStreamRequester`] decodes incoming
 //! frames into RGBA8, a Bevy system drains them and uploads them to the display
 //! node's texture, and pointer / keyboard input over that node is mapped into
@@ -258,7 +258,7 @@ fn start_desktop_streams(
             // Leave the target alone and come back next frame. Recording a
             // session here would be worse than doing nothing: it would look
             // open, produce no frames, and block the retry that would have
-            // worked once the websocket came up.
+            // worked once the session came up.
             StreamStart::NotReady => continue,
             StreamStart::Unsupported => {
                 streams.suppressed.insert(target);
@@ -319,7 +319,7 @@ enum StreamStart {
     /// The stream is open; here is where its events will arrive.
     Opened(UnboundedReceiver<DesktopStreamEvent>),
     /// There's no server connection yet. Worth trying again shortly — the
-    /// websocket comes up asynchronously after startup, so a panel expanded in
+    /// session comes up asynchronously after startup, so a panel expanded in
     /// the first second of a run lands here.
     NotReady,
     /// Nothing this layer can stream, now or later.
@@ -622,7 +622,7 @@ fn update_desktop_status(
     streams: Res<DesktopStreams>,
     mut labels: Query<(&DesktopStatusText, &mut Text)>,
 ) {
-    // The websocket comes up asynchronously after startup, so a panel expanded
+    // The session comes up asynchronously after startup, so a panel expanded
     // early has nothing to open a stream over yet. Saying so beats "inactive",
     // which reads as "and it's staying that way".
     let connected = sandpolis_client::sync::connection().is_some();

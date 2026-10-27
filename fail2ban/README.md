@@ -9,7 +9,10 @@ missing/invalid connection token, or a rejected client certificate:
 ```
 
 fail2ban can watch for these lines and ban the offending address at the
-firewall, which replaces any in-application IP blocklist.
+firewall, which replaces any in-application IP blocklist. The example jail bans
+on every port (`iptables-allports`) because the server listens on its one port
+number over both TCP (HTTPS, where logins happen) and UDP (WebTransport, where
+instances attach); a per-port ban would cover only one of the two.
 
 ## Installation
 

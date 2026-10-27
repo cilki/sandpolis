@@ -447,7 +447,7 @@ pub(crate) struct StreamSession {
     outbound: Sender<RtspSessionStreamRequest>,
     pub(crate) status: StreamStatus,
     /// Launch parameters held until a server connection is available. Probe nodes
-    /// are spawned from config before the sync websocket is up, so a stream can be
+    /// are spawned from config before the sync session is up, so a stream can be
     /// requested too early; `launch_pending_streams` takes this once sync is ready.
     pending: Option<PendingLaunch>,
     /// The connection carrying this stream, and the stream's id on it. Both are
@@ -989,7 +989,7 @@ fn start_pending_rtsp_streams(mut streams: ResMut<ProbeStreams>, views: Query<&R
         }
         // Wait for a connection before starting at all. `start_rtsp_stream`
         // would happily defer the launch, but its deferral window is finite —
-        // spending it on the seconds before the websocket even exists means the
+        // spending it on the seconds before the session even exists means the
         // stream gives up just as the connection becomes usable.
         if device_by_id(device_id)
             .as_ref()

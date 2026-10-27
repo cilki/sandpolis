@@ -1,11 +1,11 @@
-//! The websocket driver that backs every [`InstanceConnection`].
+//! The socket driver that backs every [`InstanceConnection`].
 //!
 //! Both ends of a connection run the same loop: keepalive out, keepalive in,
 //! outbound [`StreamMessage`]s encoded as binary frames, inbound binary frames
-//! decoded and dispatched. The only difference between the accept side
-//! ([`super::server`], on `axum`) and the dial side ([`super::client`], on
-//! `reqwest_websocket`) is the message type their socket speaks, which is what
-//! [`SocketMessage`] abstracts.
+//! decoded and dispatched. It is written against [`SocketMessage`] rather than
+//! any one transport's frames, so the loop (and its tests) stay the same
+//! whatever carries them; today that is the WebTransport session stream of
+//! [`super::webtransport`].
 
 use super::{
     ConnectionData, InstanceConnection, RegisterResponders,
@@ -28,12 +28,10 @@ pub enum Frame<'a> {
     Other,
 }
 
-/// What the socket driver needs of a websocket message type.
+/// What the socket driver needs of a transport's message type.
 ///
-/// Implemented for `axum::extract::ws::Message` on the accept side and
-/// `reqwest_websocket::Message` on the dial side. The two enums are unrelated
-/// types describing the same frames, and this is the whole of the difference
-/// between driving one and driving the other.
+/// Implemented for [`super::webtransport::Message`], and for the test
+/// double below.
 pub trait SocketMessage: Send + 'static {
     fn binary(payload: Vec<u8>) -> Self;
     fn ping(payload: Vec<u8>) -> Self;
@@ -44,7 +42,7 @@ pub trait SocketMessage: Send + 'static {
 }
 
 impl InstanceConnection {
-    /// Wrap a websocket with an `InstanceConnection`.
+    /// Wrap a socket with an `InstanceConnection`.
     ///
     /// The `handlers` slice contains subsystems that will register their stream
     /// responders with the connection's stream registry.
@@ -91,9 +89,9 @@ impl InstanceConnection {
 
             loop {
                 tokio::select! {
-                    // Prove the peer is still there. Tungstenite answers a ping
-                    // itself, so any frame arriving is enough to keep this from
-                    // firing — no cooperation needed from the other end.
+                    // Prove the peer is still there. Any frame arriving is
+                    // enough to keep this from firing, so the pong answering
+                    // our ping is only one of the ways a peer stays alive.
                     _ = keepalive.tick() => {
                         if last_frame.elapsed() > super::KEEPALIVE_DEADLINE {
                             break;
@@ -123,10 +121,8 @@ impl InstanceConnection {
                                         streams_clone.dispatch(message).await;
                                     }
                                 }
-                                // Tungstenite queues a pong itself, but only
-                                // flushes it on the next write; answering here
-                                // guarantees one, which is what the peer's
-                                // deadline is waiting for.
+                                // The peer's deadline is waiting on this, so
+                                // it goes out ahead of any queued data.
                                 Frame::Ping(payload) => {
                                     let pong = M::pong(payload.to_vec());
                                     if ws_tx.send(pong).await.is_err() {
@@ -174,7 +170,7 @@ mod test {
     use std::task::{Context, Poll};
     use tokio::time::{Duration, timeout};
 
-    /// Stand-in for the two real websocket message types.
+    /// Stand-in for the real transport's message type.
     #[derive(Debug, PartialEq, Eq)]
     enum TestMessage {
         Binary(Vec<u8>),

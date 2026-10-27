@@ -141,6 +141,24 @@ global-scope subscription. Because the GS only ever pulls an instance's records
 from that instance's current owner, a stale owner's writes can never enter the
 estate — the pull subscription is the fence.
 
+#### Transport
+
+A server listens on one port number (8768 by default) twice. HTTPS over TCP
+takes the one-off requests — `/user/login`, `/server/banner`, and an LS's
+enrollment at `/realm/server-cert`. WebTransport (QUIC) over UDP takes the
+_attachment_: an instance requests a session on `/connect`, names itself in the
+request headers (`x-instance-id`, `x-stratum`, the bearer token, a polling
+schedule), and the server, having read the realm off the certificate chain the
+handshake verified, either opens the session's single bidirectional stream or
+closes the connection with a code (`network::webtransport::close`) saying why.
+Every `StreamMessage` of the attachment is multiplexed over that one stream,
+which is what the relay and the stream registry already expected; mapping each
+Sandpolis stream to its own QUIC stream, and desktop frames to datagrams, are
+changes to those rather than to the transport. Both listeners share one `rustls`
+configuration — the same realm CAs verify peers, the same per-realm server
+certificates are presented by SNI — so a realm cert attaches an instance to
+either. A deployment therefore needs UDP open as well as TCP.
+
 #### Notifications
 
 Any subsystem, on any instance, can tell the user something happened. The first

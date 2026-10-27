@@ -38,7 +38,7 @@ aws-lc-rs = "1.12.1"
 axum-extra = { version = "0.12.6", features = ["typed-header"] }
 axum-macros = "0.5.0"
 axum-server = { version = "0.8.0", features = ["tls-rustls"] }
-axum = { version = "0.8.8", features = ["ws", "json"] }
+axum = { version = "0.8.8", features = ["json"] }
 base64 = "0.23.1"
 blake3 = "1"
 bollard = { version = "0.19", features = ["ssl"] }
@@ -95,7 +95,7 @@ tempfile = "3.17.0"
 time = { version = "0.3.37" }
 tokio-rustls = "0.26.0"
 tokio-stream = "0.1.17"
-tokio-util = "0.7.15"
+tokio-util = { version = "0.7.15", features = ["codec"] }
 tokio = { version = "1.49.0", features = ["full"] }
 tower = "0.5.2"
 roniker = { git = "https://github.com/fossable/roniker" }
@@ -114,7 +114,13 @@ reqwest = { version = "0.13.4", default-features = false, features = [
   "rustls",
   "charset",
 ] }
-reqwest-websocket = "0.6.0"
+# Instances attach to a server over WebTransport (QUIC). The crypto provider
+# has to be the one `rustls` above is built with, which is the one `main`
+# installs as the process default.
+wtransport = { version = "0.7.2", default-features = false, features = [
+  "aws-lc-rs",
+  "quinn",
+] }
 
 # Terminal client exclusive
 ratatui = { version = "0.30.0", features = ["unstable"] }

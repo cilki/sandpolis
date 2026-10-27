@@ -309,7 +309,7 @@ async fn attempt_link(
         connection: upstream.clone(),
     };
 
-    let link = upstream.open_websocket(network, instance).await?;
+    let link = upstream.open_session(network, instance).await?;
     info!(url = %global, "Connected to global stratum server");
 
     let established = tokio::time::Instant::now();

@@ -481,10 +481,6 @@ pub async fn main(options: RuntimeOptions, state: InstanceState) -> Result<()> {
         post(sandpolis_server::login::server::post_login),
     );
 
-    // Websocket connection endpoint (clients + agents) for streams / sync
-    let app: Router<InstanceState> =
-        app.route("/connect", get(sandpolis_server::user::server::connect));
-
     // Realm manager: the global stratum server issues server certificates to
     // local stratum servers so the whole network shares one trust root.
     let app: Router<InstanceState> = app.route(
@@ -509,16 +505,29 @@ pub async fn main(options: RuntimeOptions, state: InstanceState) -> Result<()> {
     // Tracing support for Axum
     let app = app.layer(TraceLayer::new_for_http());
 
+    // Both listeners share one TLS configuration: the same realm CAs verify
+    // peers and the same server certificates are presented, so one realm cert
+    // attaches an instance to either.
+    let tls = sandpolis_instance::realm::server::realm_tls_config(&state.instance, &state.realms)?;
+
+    // Attachments (clients, agents, local stratum servers) arrive over
+    // WebTransport on the same port, UDP. Streams and sync run over them; HTTP
+    // below is left with the one-off requests.
+    info!(listener = ?options.listen, "Starting server endpoint");
+    let endpoint =
+        sandpolis_instance::network::webtransport::server_endpoint(options.listen, tls.clone())?;
+    tokio::spawn(sandpolis_server::user::server::serve_sessions(
+        endpoint,
+        state.user.clone(),
+        notify_cert_failures,
+    ));
+
     info!(listener = ?options.listen, "Starting server listener");
     axum_server::bind(options.listen)
-        .acceptor(
-            sandpolis_instance::realm::server::RealmAcceptor::new(
-                state.instance.clone(),
-                state.realms.clone(),
-                notify_cert_failures,
-            )
-            .await?,
-        )
+        .acceptor(sandpolis_instance::realm::server::RealmAcceptor::new(
+            tls,
+            notify_cert_failures,
+        ))
         .serve(
             app.clone()
                 .with_state(state.clone())
