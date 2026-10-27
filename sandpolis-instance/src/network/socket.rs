@@ -692,4 +692,18 @@ mod test {
         timeout(Duration::from_secs(5), server.cancel.cancelled()).await?;
         Ok(())
     }
+
+    /// Closing the dialer, as an exiting agent does, ends its sessions on the
+    /// server straight away, well inside the keepalive deadline, and it can't
+    /// dial again afterwards.
+    #[tokio::test]
+    async fn closing_the_dialer_ends_the_peer_too() -> Result<()> {
+        let harness = Harness::new()?;
+        let (server, _client) = harness.attach(AgentId::random().into(), &[], &[]).await?;
+
+        harness.dialer.close(Duration::from_secs(1)).await;
+        timeout(Duration::from_secs(5), server.cancel.cancelled()).await?;
+        assert!(harness.dialer.connect([]).await.is_err());
+        Ok(())
+    }
 }

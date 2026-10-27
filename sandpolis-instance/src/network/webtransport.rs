@@ -433,6 +433,18 @@ impl Dialer {
         }
         Ok(self.endpoint.connect(options.build()).await?)
     }
+
+    /// Close every session this dialer opened and stop it opening more.
+    ///
+    /// The server is told with a close frame, so it sees the attachment end
+    /// straight away instead of waiting out the keepalive deadline. Sending the
+    /// frame is the endpoint's background work, so this waits (for at most
+    /// `grace`) until it has gone out before it returns: a process that exits
+    /// right after this call still leaves cleanly.
+    pub async fn close(&self, grace: std::time::Duration) {
+        self.endpoint.close(VarInt::from_u32(0), b"");
+        let _ = tokio::time::timeout(grace, self.endpoint.wait_idle()).await;
+    }
 }
 
 #[cfg(test)]
