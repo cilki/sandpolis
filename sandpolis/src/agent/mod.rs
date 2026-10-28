@@ -1,16 +1,14 @@
 use crate::{InstanceState, RuntimeOptions};
 use anyhow::Result;
-use chrono::Utc;
 #[cfg(feature = "uki")]
 use sandpolis_agent::bootagent::BootAgentState;
 #[cfg(feature = "uki")]
 use sandpolis_agent::bootagent::streams::{BootStreamRequest, BootStreamRequester};
 use sandpolis_instance::network::RetryWait;
-use sandpolis_server::ServerConnectStrategy;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 #[cfg(feature = "uki")]
 use tracing::error;
@@ -57,8 +55,7 @@ pub async fn start(args: crate::cli::AgentArgs) -> Result<std::process::ExitCode
     let mut options = args.options();
 
     // The realm cert names the server, carries the realm CA, and holds this
-    // agent's own certificate. How the agent connects to that server — straight
-    // through or on a schedule — comes from the command line.
+    // agent's own certificate.
     let mut endpoint_certs = Vec::new();
     if let Some(cert) = crate::load_realm_cert(args.realm.as_deref())? {
         options.server = Some(cert.url()?);
@@ -132,154 +129,66 @@ pub async fn main(
 
     services.start()?;
 
-    // A boot agent stays continuously connected so the server can hold it;
-    // `--poll` doesn't exist in UKI builds.
-    #[cfg(feature = "uki")]
-    let strategy = ServerConnectStrategy::Continuous;
-
-    // Pick the connection strategy from `--poll`: a schedule selects polling
-    // mode (periodic check-ins), otherwise the agent stays continuously
-    // connected.
-    #[cfg(not(feature = "uki"))]
-    let strategy = match &options.poll {
-        Some(poll) => {
-            match ServerConnectStrategy::polling(
-                &poll.schedule,
-                Duration::from_secs(poll.timeout_secs),
-            ) {
-                Ok(strategy) => strategy,
-                Err(e) => {
-                    warn!(error = %e, "Invalid poll schedule; using continuous mode");
-                    ServerConnectStrategy::Continuous
-                }
-            }
-        }
-        None => ServerConnectStrategy::Continuous,
-    };
-
     let server = state.server.clone();
     let network = state.network.clone();
     let instance = state.instance.clone();
 
-    match &strategy {
-        // Hold a single connection open for the agent's lifetime,
-        // reconnecting whenever it drops.
-        ServerConnectStrategy::Continuous => {
-            let mut retry = server_retry();
-            let mut failures = 0;
-            loop {
-                // Every path through this loop comes back round, because an
-                // agent that stops trying is indistinguishable from one that
-                // died — and nobody is watching its logs to find out which.
-                let wait = match attempt_connection(
-                    &server,
-                    &network,
-                    &instance,
-                    &url,
+    // Hold a single connection open for the agent's lifetime, reconnecting
+    // whenever it drops.
+    let mut retry = server_retry();
+    let mut failures = 0;
+    loop {
+        // Every path through this loop comes back round, because an agent that
+        // stops trying is indistinguishable from one that died — and nobody is
+        // watching its logs to find out which.
+        let wait = match attempt_connection(
+            &server,
+            &network,
+            &instance,
+            &url,
+            failures,
+            #[cfg(feature = "uki")]
+            &boot,
+        )
+        .await
+        {
+            // The connection was up long enough to count as healthy, so treat
+            // this outage as a fresh one and reconnect promptly.
+            Ok(uptime) if uptime >= STABLE_AFTER => {
+                warn!(url = %url, uptime = ?uptime, "Server connection cancelled, reconnecting");
+                retry = server_retry();
+                failures = 0;
+                retry.next().unwrap()
+            }
+            // Established but immediately dropped: keep backing off, otherwise
+            // a server that accepts and then drops us produces a hot loop.
+            Ok(uptime) => {
+                let wait = retry.next().unwrap();
+                failures = 0;
+                warn!(url = %url, uptime = ?uptime, waiting = ?wait, "Server connection dropped quickly; backing off");
+                wait
+            }
+            // An agent nobody is watching interactively gets one log line and
+            // nothing else, so this has to be loud: at `debug` an agent that
+            // could never reach its server said nothing at all. Warning on every
+            // attempt is affordable because the backoff above caps at a minute
+            // — the same trade `sandpolis_server::stratum` makes on its own
+            // retry loop.
+            Err(e) => {
+                let wait = retry.next().unwrap();
+                failures += 1;
+                warn!(
+                    error = error_chain(&e),
+                    url = %url,
+                    waiting = ?wait,
                     failures,
-                    #[cfg(feature = "uki")]
-                    &boot,
-                )
-                .await
-                {
-                    // The connection was up long enough to count as healthy, so
-                    // treat this outage as a fresh one and reconnect promptly.
-                    Ok(uptime) if uptime >= STABLE_AFTER => {
-                        warn!(url = %url, uptime = ?uptime, "Server connection cancelled, reconnecting");
-                        retry = server_retry();
-                        failures = 0;
-                        retry.next().unwrap()
-                    }
-                    // Established but immediately dropped: keep backing off,
-                    // otherwise a server that accepts and then drops us
-                    // produces a hot loop.
-                    Ok(uptime) => {
-                        let wait = retry.next().unwrap();
-                        failures = 0;
-                        warn!(url = %url, uptime = ?uptime, waiting = ?wait, "Server connection dropped quickly; backing off");
-                        wait
-                    }
-                    // An agent nobody is watching interactively gets one log
-                    // line and nothing else, so this has to be loud: at `debug`
-                    // an agent that could never reach its server said nothing
-                    // at all. Warning on every attempt is affordable because
-                    // the backoff above caps at a minute — the same trade
-                    // `sandpolis_server::stratum` makes on its own retry loop.
-                    Err(e) => {
-                        let wait = retry.next().unwrap();
-                        failures += 1;
-                        warn!(
-                            error = error_chain(&e),
-                            url = %url,
-                            waiting = ?wait,
-                            failures,
-                            "Cannot reach the server; retrying"
-                        );
-                        wait
-                    }
-                };
-
-                sleep(wait).await;
+                    "Cannot reach the server; retrying"
+                );
+                wait
             }
-        }
+        };
 
-        // Stay disconnected between check-ins. On each scheduled tick,
-        // open the session so the server pulls our accumulated data
-        // and delivers any pending work, hold it briefly, then close.
-        ServerConnectStrategy::Polling { schedule, timeout } => {
-            // Build the connection (http client + banner) once and reuse
-            // it; only the session opens and closes per window.
-            // The same backoff and the same reporting as the continuous loop:
-            // a polling agent that can't reach its server at all is in exactly
-            // the same trouble, and has even less chance of being noticed.
-            let mut retry = server_retry();
-            let mut failures = 0;
-            let entry = loop {
-                match server
-                    .connect_with_strategy(url.clone(), strategy.clone())
-                    .await
-                {
-                    Ok(connection) => break Arc::new(connection),
-                    Err(e) => {
-                        let wait = retry.next().unwrap();
-                        failures += 1;
-                        warn!(
-                            error = error_chain(&e),
-                            url = %url,
-                            waiting = ?wait,
-                            failures,
-                            "Cannot reach the server; retrying"
-                        );
-                        sleep(wait).await;
-                    }
-                }
-            };
-            server.outbound.write().unwrap().push(entry.clone());
-            info!(url = %url, schedule = %schedule, "Agent connected in polling mode");
-
-            loop {
-                // Sleep until the next scheduled check-in.
-                let wait = schedule
-                    .upcoming(Utc)
-                    .next()
-                    .and_then(|t| (t - Utc::now()).to_std().ok())
-                    .unwrap_or_else(|| Duration::from_secs(1));
-                debug!(url = %url, waiting = ?wait, "Waiting for next poll window");
-                sleep(wait).await;
-
-                match entry.open_session(&network, &instance).await {
-                    Ok(_) => {
-                        info!(url = %url, timeout = ?timeout, "Poll window open");
-                        sleep(*timeout).await;
-                        entry.close_session();
-                        debug!(url = %url, "Poll window closed");
-                    }
-                    Err(e) => {
-                        warn!(error = %e, url = %url, "Poll check-in failed");
-                    }
-                }
-            }
-        }
+        sleep(wait).await;
     }
 }
 

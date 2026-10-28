@@ -307,11 +307,6 @@ pub struct InstanceConnection {
     pub cluster_id: ClusterId,
     pub cancel: CancellationToken,
     pub streams: Arc<StreamRegistry>,
-
-    /// The check-in schedule a polling peer announced when it connected, set by
-    /// whichever side accepted the socket. In memory only: it describes this
-    /// socket, and a peer that reconnects announces it again.
-    pub poll: std::sync::OnceLock<liveness::PollAnnouncement>,
 }
 
 impl Drop for InstanceConnection {

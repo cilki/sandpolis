@@ -104,26 +104,6 @@ pub struct AgentArgs {
     /// name is the server's address.
     #[clap(long, value_name = "PATH", env = "S7S_REALM")]
     pub realm: Option<PathBuf>,
-
-    /// Cron expression putting the agent in polling mode, e.g. `0 */5 * * * *`
-    /// for a check-in every five minutes ($S7S_POLL).
-    ///
-    /// Without it the agent stays connected continuously.
-    #[cfg(not(feature = "uki"))]
-    #[clap(long, value_name = "CRON", env = "S7S_POLL")]
-    pub poll: Option<String>,
-
-    /// How long each check-in window stays open, in seconds ($S7S_POLL_TIMEOUT).
-    ///
-    /// Only meaningful alongside `--poll`.
-    #[cfg(not(feature = "uki"))]
-    #[clap(
-        long,
-        value_name = "SECONDS",
-        env = "S7S_POLL_TIMEOUT",
-        default_value_t = sandpolis_agent::PollConfig::default_timeout_secs(),
-    )]
-    pub poll_timeout: u64,
 }
 
 /// Flags for the client, which every client subcommand shares.
@@ -182,14 +162,6 @@ impl AgentArgs {
                 ..Default::default()
             },
             instance_type: sandpolis_instance::InstanceType::Agent,
-            #[cfg(not(feature = "uki"))]
-            poll: self
-                .poll
-                .clone()
-                .map(|schedule| sandpolis_agent::PollConfig {
-                    schedule,
-                    timeout_secs: self.poll_timeout,
-                }),
             ..Default::default()
         }
     }
@@ -255,15 +227,6 @@ pub enum AgentsCommand {
         /// trusted on first use
         #[clap(long)]
         fingerprint: Option<String>,
-
-        /// Cron expression putting the deployed agent in polling mode
-        #[clap(long, value_name = "CRON")]
-        poll: Option<String>,
-
-        /// Check-in window length for --poll, in seconds
-        #[clap(long, value_name = "SECONDS",
-               default_value_t = sandpolis_agent::PollConfig::default_timeout_secs())]
-        poll_timeout: u64,
 
         /// Report what the deployment would do without changing the target
         #[clap(long)]
@@ -784,45 +747,6 @@ mod test_agent_args {
             Some(std::path::Path::new("/var/lib/sandpolis"))
         );
     }
-
-    /// Polling is a property of how this agent runs rather than of the
-    /// certificate it holds, so it comes from the command line.
-    #[cfg(not(feature = "uki"))]
-    #[test]
-    fn poll_flags_build_the_poll_config() {
-        let command = CommandLine::try_parse_from([
-            "sandpolis",
-            "agent",
-            "--poll",
-            "0 */5 * * * *",
-            "--poll-timeout",
-            "45",
-        ])
-        .expect("`agent --poll --poll-timeout` parses")
-        .command;
-
-        let Commands::Agent { args, .. } = command else {
-            panic!("expected the agent subcommand, got {command:?}");
-        };
-        let poll = args.options().poll.expect("--poll selects polling mode");
-        assert_eq!(poll.schedule, "0 */5 * * * *");
-        assert_eq!(poll.timeout_secs, 45);
-    }
-
-    /// Without `--poll` the agent stays continuously connected, whatever
-    /// `--poll-timeout` says.
-    #[cfg(not(feature = "uki"))]
-    #[test]
-    fn no_poll_flag_means_continuous() {
-        let command = CommandLine::try_parse_from(["sandpolis", "agent", "--poll-timeout", "45"])
-            .expect("`agent --poll-timeout` parses")
-            .command;
-
-        let Commands::Agent { args, .. } = command else {
-            panic!("expected the agent subcommand, got {command:?}");
-        };
-        assert!(args.options().poll.is_none());
-    }
 }
 
 #[cfg(all(test, feature = "client"))]
@@ -992,25 +916,10 @@ mod client {
                 port,
                 key,
                 fingerprint,
-                poll,
-                poll_timeout,
                 dryrun,
                 json,
                 ..
-            } => {
-                deploy(
-                    host,
-                    user,
-                    port,
-                    key,
-                    fingerprint,
-                    poll,
-                    poll_timeout,
-                    dryrun,
-                    json,
-                )
-                .await
-            }
+            } => deploy(host, user, port, key, fingerprint, dryrun, json).await,
         }
     }
 
@@ -1027,8 +936,6 @@ mod client {
         port: Option<u16>,
         key: Option<PathBuf>,
         fingerprint: Option<String>,
-        poll: Option<String>,
-        poll_timeout: u64,
         dryrun: bool,
         json: bool,
     ) -> Result<ExitCode> {
@@ -1108,10 +1015,6 @@ mod client {
                 fingerprint: resolved.fingerprint,
             },
             server,
-            poll: poll.map(|schedule| sandpolis_agent::PollConfig {
-                schedule,
-                timeout_secs: poll_timeout,
-            }),
             dry_run: dryrun,
         };
 

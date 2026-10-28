@@ -45,7 +45,6 @@ bollard = { version = "0.21", features = ["ssl"] }
 chrono = { version = "0.4.45", features = ["serde"] }
 clap = { version = "4.6.7", features = ["derive", "env", "string"] }
 colored = "3.1.1"
-cron = { version = "0.17.0", features = ["serde"] }
 futures = "0.3.34"
 futures-util = "0.3.34"
 gethostname = "1.1.0"

@@ -15,7 +15,6 @@ bevy = { workspace = true, optional = true } # TODO avoid with newtypes?
 chrono = { workspace = true }
 clap = { workspace = true }
 colored = { workspace = true }
-cron = { workspace = true }
 futures-util = { workspace = true }
 futures = { workspace = true }
 headers = { workspace = true, optional = true }

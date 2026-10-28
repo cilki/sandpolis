@@ -976,7 +976,6 @@ mod relay_tests {
             cluster_id: ClusterId::default(),
             cancel: CancellationToken::new(),
             streams: server_agent_reg.clone(),
-            poll: Default::default(),
         });
         let client_conn = Arc::new(InstanceConnection {
             data: conns.push(client_data)?,
@@ -984,7 +983,6 @@ mod relay_tests {
             cluster_id: ClusterId::default(),
             cancel: CancellationToken::new(),
             streams: server_client_reg.clone(),
-            poll: Default::default(),
         });
 
         let connections = Arc::new(RwLock::new(vec![agent_conn, client_conn]));
@@ -1051,7 +1049,6 @@ mod relay_tests {
             cluster_id: ClusterId::default(),
             cancel: CancellationToken::new(),
             streams: reg.clone(),
-            poll: Default::default(),
         }))
     }
 

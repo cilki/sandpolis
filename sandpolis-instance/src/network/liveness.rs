@@ -24,22 +24,8 @@ use chrono::{DateTime, Utc};
 use native_db::*;
 use native_model::Model;
 use sandpolis_macros::data;
-use serde_with::chrono::serde::{ts_seconds, ts_seconds_option};
+use serde_with::chrono::serde::ts_seconds;
 use std::collections::BTreeSet;
-
-/// What a polling peer said about its own check-in schedule when it connected.
-///
-/// Kept as the raw cron string: the peer is the one that has to honor it, and
-/// only the server that reasons about missed check-ins needs to parse it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PollAnnouncement {
-    pub schedule: String,
-    pub timeout: std::time::Duration,
-}
-
-/// The longest cron schedule string worth looking at. A schedule arrives as an
-/// untrusted header, and anything sane is far shorter than this.
-pub const MAX_SCHEDULE_LEN: usize = 128;
 
 /// One server's view of one instance's reachability.
 #[data(instance)]
@@ -54,16 +40,6 @@ pub struct LivenessData {
     /// When the observer last had a live connection to the subject.
     #[serde(with = "ts_seconds")]
     pub last_seen: DateTime<Utc>,
-
-    /// The cron schedule a polling agent reported when it last checked in.
-    /// `None` means the subject stays connected continuously, so losing the
-    /// connection is immediately a fault.
-    pub poll_schedule: Option<String>,
-
-    /// When the next check-in is due, for a polling subject that is currently
-    /// disconnected. Passing this without a connection is what makes it offline.
-    #[serde(with = "ts_seconds_option")]
-    pub expected_next: Option<DateTime<Utc>>,
 }
 
 impl LivenessData {
@@ -73,8 +49,6 @@ impl LivenessData {
             subject,
             online: false,
             last_seen: Default::default(),
-            poll_schedule: None,
-            expected_next: None,
             _id: Default::default(),
             _revision: Default::default(),
             _creation: Default::default(),

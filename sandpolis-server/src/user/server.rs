@@ -509,24 +509,6 @@ async fn accept_session(
     let remote_instance = header("x-instance-id").and_then(|s| s.parse::<InstanceId>().ok());
     let peer_stratum = header("x-stratum").unwrap_or("").to_string();
 
-    // A polling peer says how often it means to come back, which is the only
-    // way this server can tell "away until the next window" from "gone".
-    let poll = header("x-poll-schedule")
-        .filter(|schedule| {
-            !schedule.is_empty()
-                && schedule.len() <= sandpolis_instance::network::liveness::MAX_SCHEDULE_LEN
-        })
-        .map(
-            |schedule| sandpolis_instance::network::liveness::PollAnnouncement {
-                schedule: schedule.to_string(),
-                timeout: std::time::Duration::from_secs(
-                    header("x-poll-timeout")
-                        .and_then(|v| v.parse().ok())
-                        .unwrap_or(0),
-                ),
-            },
-        );
-
     let token = header("authorization")
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(str::to_string);
@@ -689,10 +671,6 @@ async fn accept_session(
         state.instance.cluster_id,
         &handlers,
     );
-
-    if let Some(poll) = poll {
-        let _ = instance_connection.poll.set(poll);
-    }
 
     // Let this connection relay streams to other connections (client -> agent).
     instance_connection

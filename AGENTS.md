@@ -115,10 +115,8 @@ cp ./data/default.realm.pem ./ops.realm.pem
 sandpolis server --realm ./ops.realm.pem --data ./ls-data --listen 0.0.0.0:8769
 
 # An agent, attached to either stratum. Without --data it keeps nothing across
-# restarts. --poll makes it check in on a schedule rather than staying
-# connected.
-sandpolis agent --realm ./ops.realm.pem --data ./agent-data \
-          --poll '0 */5 * * * *' --poll-timeout 30
+# restarts. It stays connected for as long as it runs.
+sandpolis agent --realm ./ops.realm.pem --data ./agent-data
 
 # A client, attached to either stratum. It picks up every realm cert in --data,
 # so naming one is only necessary without a data directory. With neither it
@@ -147,11 +145,10 @@ A server listens on one port number (8768 by default) twice. HTTPS over TCP
 takes the one-off requests — `/user/login`, `/server/banner`, and an LS's
 enrollment at `/realm/server-cert`. WebTransport (QUIC) over UDP takes the
 _attachment_: an instance requests a session on `/connect`, names itself in the
-request headers (`x-instance-id`, `x-stratum`, the bearer token, a polling
-schedule), and the server, having read the realm off the certificate chain the
-handshake verified, either opens the session's _control stream_ (keepalive
-only) or closes the connection with a code (`network::webtransport::close`)
-saying why. Every Sandpolis stream then runs on a QUIC stream of its own: the
+request headers (`x-instance-id`, `x-stratum`, the bearer token), and the
+server, having read the realm off the certificate chain the handshake verified,
+either opens the session's _control stream_ (keepalive only) or closes the
+connection with a code (`network::webtransport::close`) saying why. Every Sandpolis stream then runs on a QUIC stream of its own: the
 first `StreamMessage` for a `StreamId` opens one, replies come back on it, and
 `StreamRegistry::close` finishes it — which is how the peer learns to drop its
 responder, and how a server follows the close to the connection it relayed the

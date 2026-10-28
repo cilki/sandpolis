@@ -16,7 +16,6 @@ base64 = { workspace = true }
 bevy = { workspace = true, optional = true }
 chrono = { workspace = true }
 clap = { workspace = true }
-cron = { workspace = true }
 futures = { workspace = true }
 inventory = { workspace = true }
 jsonwebtoken = { version = "11.1.0", optional = true }

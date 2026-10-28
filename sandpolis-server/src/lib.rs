@@ -2,7 +2,6 @@ use crate::banner::{GetBannerRequest, GetBannerResponse};
 use crate::login::{LoginRequest, LoginResponse};
 use anyhow::{Result, anyhow};
 use axum::http::HeaderValue;
-use cron::Schedule;
 use native_db::ToKey;
 use native_model::Model;
 use reqwest::header::CONTENT_TYPE;
@@ -26,9 +25,7 @@ use sandpolis_instance::{ClusterId, InstanceId, InstanceType};
 use sandpolis_macros::data;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::fmt::Display;
-use std::str::FromStr;
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 use validator::Validate;
@@ -155,12 +152,8 @@ impl ServerManager {
     }
 
     #[cfg(any(feature = "agent", feature = "client", feature = "server"))]
-    fn connect_server(
-        &self,
-        url: ServerUrl,
-        strategy: ServerConnectStrategy,
-    ) -> Result<ServerConnection> {
-        debug!(url = %url, ?strategy, "Configuring server connection");
+    fn connect_server(&self, url: ServerUrl) -> Result<ServerConnection> {
+        debug!(url = %url, "Configuring server connection");
 
         // Everything that dials a server presents the same kind of certificate,
         // including a local stratum server dialing its global stratum server
@@ -184,7 +177,6 @@ impl ServerManager {
         Ok(ServerConnection {
             inner: Arc::new(RwLock::new(None)),
             runtime: self.runtime.clone(),
-            strategy,
             client: Arc::new(tokio::sync::RwLock::new(Some(client_builder()?))),
             dialer: webtransport::Dialer::new(&cert, &url)?,
             cancel: CancellationToken::new(),
@@ -198,38 +190,21 @@ impl ServerManager {
         })
     }
 
-    /// Connect to a server in the default `Continuous` strategy (the live
-    /// connection is held open by the session).
+    /// Connect to a server. The live connection is held open by the session
+    /// (see [`ServerConnection::open_session`]).
     #[cfg(any(feature = "agent", feature = "client", feature = "server"))]
     pub async fn connect(&self, url: ServerUrl) -> Result<ServerConnection> {
-        self.connect_with_strategy(url, ServerConnectStrategy::Continuous)
-            .await
-    }
-
-    /// Connect to a server with an explicit [`ServerConnectStrategy`]. Agents
-    /// that only check in periodically pass `Polling`; everything else uses
-    /// `Continuous` via [`connect`](Self::connect).
-    #[cfg(any(feature = "agent", feature = "client", feature = "server"))]
-    pub async fn connect_with_strategy(
-        &self,
-        url: ServerUrl,
-        strategy: ServerConnectStrategy,
-    ) -> Result<ServerConnection> {
         let this = self.clone();
         self.runtime
-            .spawn(async move { this.connect_on_runtime(url, strategy).await })
+            .spawn(async move { this.connect_on_runtime(url).await })
             .await?
     }
 
-    /// [`connect_with_strategy`](Self::connect_with_strategy) minus the hop
-    /// onto the tokio runtime, which the sockets created here need.
+    /// [`connect`](Self::connect) minus the hop onto the tokio runtime, which
+    /// the sockets created here need.
     #[cfg(any(feature = "agent", feature = "client", feature = "server"))]
-    async fn connect_on_runtime(
-        &self,
-        url: ServerUrl,
-        strategy: ServerConnectStrategy,
-    ) -> Result<ServerConnection> {
-        let mut inner = self.connect_server(url, strategy)?;
+    async fn connect_on_runtime(&self, url: ServerUrl) -> Result<ServerConnection> {
+        let mut inner = self.connect_server(url)?;
 
         debug!("Fetching server banner");
 
@@ -304,7 +279,6 @@ pub struct ServerConnection {
     /// requests hop onto it so callers may poll from non-tokio executors
     /// (the GUI uses bevy's task pools).
     runtime: tokio::runtime::Handle,
-    pub strategy: ServerConnectStrategy,
     pub cancel: CancellationToken,
     pub banner: ServerBanner,
     /// The live session used for streams / sync, once established.
@@ -371,17 +345,6 @@ impl ServerConnection {
         #[cfg(feature = "server")]
         if let Some(stratum) = self.stratum.as_ref() {
             headers.push(("x-stratum".to_string(), stratum.header_value().to_string()));
-        }
-
-        // A polling agent announces its schedule, because otherwise the
-        // server cannot tell it apart from an agent that died: both look
-        // like a connection that closed and did not come back.
-        if let ServerConnectStrategy::Polling { schedule, timeout } = &self.strategy {
-            headers.push(("x-poll-schedule".to_string(), schedule.to_string()));
-            headers.push((
-                "x-poll-timeout".to_string(),
-                timeout.as_secs().to_string(),
-            ));
         }
 
         let connection = self.dialer.connect(headers).await?;
@@ -452,23 +415,6 @@ impl ServerConnection {
         Ok(instance_connection)
     }
 
-    /// Close the session opened by [`open_session`](Self::open_session), if
-    /// one is active. Agents in `Polling` mode call this to end a check-in
-    /// window: the socket is cancelled and its bookkeeping (the tracked
-    /// `ConnectionData` row) is cleaned up so repeated windows don't accumulate
-    /// stale connections.
-    #[cfg(any(feature = "client", feature = "agent", feature = "server"))]
-    pub fn close_session(&self) {
-        let Some(connection) = self.inner.write().unwrap().take() else {
-            return;
-        };
-
-        // Cancel the socket task explicitly. `Drop` would also do this once every
-        // Arc is gone, but a stream may still hold a reference. The janitor
-        // spawned by `open_session` removes the row once this lands.
-        connection.cancel.cancel();
-    }
-
     pub async fn get<Response>(&self, endpoint: &str, body: impl Serialize) -> Result<Response>
     where
         Response: DeserializeOwned,
@@ -495,11 +441,9 @@ impl ServerConnection {
         // Serialize request and record bytes
         let body = serde_json::to_vec(&body)?;
 
-        // One-off requests use the pooled `reqwest` client regardless of
-        // strategy: it opens connections on demand, so this works the same
-        // whether the agent holds a `Continuous` session or only connects
-        // during a `Polling` window. The strategy only governs the lifetime of
-        // the long-lived session (see `open_session`).
+        // One-off requests use the pooled `reqwest` client, which opens
+        // connections on demand independently of the long-lived session (see
+        // `open_session`).
         debug!(endpoint = %endpoint, "Sending request");
         let client = self
             .client
@@ -566,54 +510,6 @@ impl ServerConnection {
             *self.token.write().unwrap() = Some(token.clone());
         }
         result
-    }
-}
-
-/// In continuous mode, the agent maintains its primary connection at all times.
-/// If the connection is lost, the agent will periodically attempt to
-/// reestablish the connection using the same parameters it used to establish
-/// the initial connection.
-///
-/// The connection mode can be changed on-the-fly by a user or scheduled to
-/// change automatically according to the time and day.
-///
-/// In polling mode, the agent intentionally closes the primary connection
-/// unless there exists an active stream. On a configurable schedule, the agent
-/// reconnects to a server, flushes any cached data, and checks for any new work
-/// items. After executing all available work items, the primary connection is
-/// closed again.
-///
-/// The agent may attempt a spontaneous connection outside of the regular
-/// schedule if an internal agent process triggers it.
-#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
-pub enum ServerConnectStrategy {
-    /// The connection will never intentionally disconnect. This is best when
-    /// latency is important.
-    #[default]
-    Continuous,
-
-    /// The connection will intentionally disconnect. This is best when latency
-    /// is not important.
-    Polling {
-        /// Cron schedule for when to poll (e.g., "0 */5 * * * *" for every 5
-        /// minutes)
-        schedule: Schedule,
-
-        /// How long the connection will stay alive
-        timeout: Duration,
-    },
-}
-
-impl ServerConnectStrategy {
-    /// Build a [`Polling`](ServerConnectStrategy::Polling) strategy from a cron
-    /// expression and a per-window keep-alive duration. Lets callers construct
-    /// the strategy without depending on the `cron` crate directly.
-    pub fn polling(schedule: &str, timeout: Duration) -> Result<Self> {
-        Ok(Self::Polling {
-            schedule: Schedule::from_str(schedule)
-                .map_err(|e| anyhow!("invalid cron schedule {schedule:?}: {e}"))?,
-            timeout,
-        })
     }
 }
 

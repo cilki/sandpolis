@@ -635,7 +635,6 @@ mod test_locations {
                 cluster_id: ClusterId::default(),
                 cancel: CancellationToken::new(),
                 streams: Arc::new(StreamRegistry::new(tokio::sync::mpsc::channel(1).0)),
-                poll: Default::default(),
             }))
         };
 

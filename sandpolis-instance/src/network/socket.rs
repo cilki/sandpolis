@@ -206,7 +206,6 @@ impl InstanceConnection {
             cluster_id,
             cancel,
             streams,
-            poll: Default::default(),
         })
     }
 }

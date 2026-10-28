@@ -9,8 +9,7 @@
 //! back over the stream, so the client can show progress rather than a spinner
 //! that hides a two-minute upload. A host that already has an agent installed
 //! stops after [`DeployStep::Upload`]: rewriting its realm cert is the whole
-//! job. Polling belongs to the unit file rather than the certificate, so
-//! redeploying to an installed host leaves its schedule as it was.
+//! job.
 //!
 //! A dry run walks the read-only prefix of the same sequence — connect, probe,
 //! certificate validation — and then reports what a real deployment would do
@@ -87,10 +86,6 @@ pub enum DeployStreamRequest {
         /// form becomes the common name of the minted agent certificate, and
         /// its realm decides which CA signs it.
         server: sandpolis_instance::realm::url::ServerUrl,
-        /// Run the deployed agent in polling mode instead of keeping it
-        /// continuously connected. Baked into the unit file, so it only applies
-        /// to a fresh installation.
-        poll: Option<crate::PollConfig>,
         /// Probe and report what a deployment would do, without changing the
         /// target: no upload, no unit file, no service start.
         dry_run: bool,

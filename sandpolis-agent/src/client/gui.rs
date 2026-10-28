@@ -525,9 +525,6 @@ fn start_deploy(
             fingerprint: resolved.fingerprint,
         },
         server,
-        // Deployed agents stay connected; polling is a per-agent choice made
-        // by whoever wrote the unit file.
-        poll: None,
         dry_run: false,
     };
 

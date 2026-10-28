@@ -49,11 +49,6 @@ pub struct RuntimeOptions {
     #[cfg(feature = "server")]
     pub server_name: Option<String>,
 
-    /// Polling connection mode, from `--poll`. A boot agent has no polling
-    /// mode: it stays continuously connected so the server can hold it.
-    #[cfg(all(feature = "agent", not(feature = "uki")))]
-    pub poll: Option<sandpolis_agent::PollConfig>,
-
     /// The server this agent attaches to, named by its realm cert.
     #[cfg(feature = "agent")]
     pub server: Option<sandpolis_server::ServerUrl>,
@@ -75,8 +70,6 @@ impl Default for RuntimeOptions {
             ),
             #[cfg(feature = "server")]
             server_name: None,
-            #[cfg(all(feature = "agent", not(feature = "uki")))]
-            poll: None,
             #[cfg(feature = "agent")]
             server: None,
             #[cfg(feature = "server")]

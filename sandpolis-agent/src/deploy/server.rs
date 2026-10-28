@@ -56,7 +56,6 @@ impl StreamResponder for DeployStreamResponder {
         let DeployStreamRequest::Start {
             target,
             server,
-            poll,
             dry_run,
         } = request;
 
@@ -67,7 +66,7 @@ impl StreamResponder for DeployStreamResponder {
                 step: DeployStep::Connect,
             };
 
-            let deploy = deploy(&target, &server, poll, dry_run, &mut progress);
+            let deploy = deploy(&target, &server, dry_run, &mut progress);
             tokio::select! {
                 _ = cancel.cancelled() => {
                     debug!(host = %target.host, "Deployment cancelled");
@@ -189,7 +188,6 @@ impl Progress {
 async fn deploy(
     target: &DeployTarget,
     server: &ServerUrl,
-    poll: Option<crate::PollConfig>,
     dry_run: bool,
     progress: &mut Progress,
 ) -> Result<Outcome> {
@@ -267,8 +265,7 @@ async fn deploy(
     progress.done().await;
 
     // An agent that's already installed picks up the certificate we just wrote,
-    // so there is nothing left to install. Its polling schedule lives in the
-    // unit file, which belongs to the installation and is left alone here.
+    // so there is nothing left to install.
     if installed {
         return Ok(Outcome::Deployed { reconfigured: true });
     }
@@ -286,7 +283,7 @@ async fn deploy(
         &session,
         systemd::UNIT_PATH,
         "644",
-        systemd::unit_file(poll.as_ref()).into_bytes(),
+        systemd::unit_file().into_bytes(),
     )
     .await?;
     run_checked(&session, "systemctl daemon-reload").await?;
