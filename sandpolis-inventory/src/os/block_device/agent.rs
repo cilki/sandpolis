@@ -1,9 +1,9 @@
-use super::BlockDeviceData;
+use super::{BlockDeviceData, BlockDeviceDataKey};
 use crate::sysfs;
 use anyhow::Result;
 use sandpolis_agent::Collector;
 use sandpolis_instance::InstanceId;
-use sandpolis_instance::database::{Data, RealmDatabase, ResidentVec};
+use sandpolis_instance::database::{Data, DataCondition, RealmDatabase, ResidentVec};
 use tracing::trace;
 
 /// Polls the host's whole block devices (disks) out of sysfs.
@@ -15,7 +15,10 @@ pub struct BlockDeviceCollector {
 impl BlockDeviceCollector {
     pub fn new(db: RealmDatabase, instance_id: InstanceId) -> Result<Self> {
         Ok(Self {
-            data: db.resident_vec(())?,
+            data: db.resident_vec(DataCondition::equal(
+                BlockDeviceDataKey::_instance_id,
+                instance_id,
+            ))?,
             instance_id,
         })
     }

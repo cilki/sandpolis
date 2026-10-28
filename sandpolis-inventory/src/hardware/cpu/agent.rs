@@ -1,9 +1,11 @@
-use super::{CpuCoreData, CpuData};
+use super::{CpuCoreData, CpuCoreDataKey, CpuData, CpuDataKey};
 use crate::HISTORY_RETENTION;
 use anyhow::Result;
 use sandpolis_agent::Collector;
 use sandpolis_instance::InstanceId;
-use sandpolis_instance::database::{Data, DataExpiration, RealmDatabase, Resident, ResidentVec};
+use sandpolis_instance::database::{
+    Data, DataCondition, DataExpiration, RealmDatabase, Resident, ResidentVec,
+};
 use sysinfo::{CpuRefreshKind, RefreshKind, System};
 use tracing::trace;
 
@@ -22,8 +24,14 @@ impl CpuCollector {
             system: System::new_with_specifics(
                 RefreshKind::nothing().with_cpu(CpuRefreshKind::everything()),
             ),
-            cpu: db.resident_with((), || CpuData::scoped(instance_id))?,
-            cores: db.resident_vec(())?,
+            cpu: db.resident_with(
+                DataCondition::equal(CpuDataKey::_instance_id, instance_id),
+                || CpuData::scoped(instance_id),
+            )?,
+            cores: db.resident_vec(DataCondition::equal(
+                CpuCoreDataKey::_instance_id,
+                instance_id,
+            ))?,
             instance_id,
         })
     }
@@ -124,6 +132,44 @@ mod tests {
                 core.usage
             );
         }
+        Ok(())
+    }
+
+    /// A process can hold other instances' readings too (a server built with
+    /// the agent feature replicates its agents'). The collector must neither
+    /// trip over them nor treat them as its own.
+    #[tokio::test]
+    #[test_log::test]
+    async fn test_cpu_collector_ignores_other_instances() -> Result<()> {
+        let database: DatabaseManager = test_db!(CpuData, CpuCoreData);
+        let realm = database.realm(RealmName::default())?;
+
+        let other = sandpolis_instance::AgentId::random().into();
+        let foreign_core = CpuCoreData {
+            // Beyond any real core count, so it would look stale if it were ours.
+            index: u32::MAX,
+            ..CpuCoreData::scoped(other)
+        };
+        let rw = realm.local_write()?;
+        rw.insert(CpuData::scoped(other))?;
+        rw.insert(foreign_core.clone())?;
+        rw.commit()?;
+
+        let instance_id = sandpolis_instance::ServerId::random().into();
+        let mut collector = CpuCollector::new(realm.clone(), instance_id)?;
+        collector.refresh().await?;
+
+        assert_eq!(collector.cpu.read()._instance_id, instance_id);
+        assert!(
+            collector
+                .cores
+                .iter()
+                .all(|core| core.read()._instance_id == instance_id)
+        );
+
+        let r = realm.r_transaction()?;
+        let stored: Option<CpuCoreData> = r.get().primary(foreign_core.id())?;
+        assert!(stored.is_some(), "another instance's core was removed");
         Ok(())
     }
 }

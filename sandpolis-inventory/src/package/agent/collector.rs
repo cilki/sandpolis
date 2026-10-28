@@ -2,11 +2,11 @@ use super::PackageManager as PackageManagerTrait;
 use super::apt::Apt;
 use super::nix::Nix;
 use super::pacman::Pacman;
-use crate::package::{PackageData, PackageManager as PM};
+use crate::package::{PackageData, PackageDataKey, PackageManager as PM};
 use anyhow::Result;
 use sandpolis_agent::Collector;
 use sandpolis_instance::InstanceId;
-use sandpolis_instance::database::{Data, RealmDatabase, ResidentVec};
+use sandpolis_instance::database::{Data, DataCondition, RealmDatabase, ResidentVec};
 use tracing::{debug, trace, warn};
 
 /// A concrete package manager detected on this host.
@@ -76,7 +76,10 @@ pub struct PackageCollector {
 impl PackageCollector {
     pub fn new(db: RealmDatabase, instance_id: InstanceId) -> Result<Self> {
         Ok(Self {
-            data: db.resident_vec(())?,
+            data: db.resident_vec(DataCondition::equal(
+                PackageDataKey::_instance_id,
+                instance_id,
+            ))?,
             managers: Manager::detect_all(),
             instance_id,
         })

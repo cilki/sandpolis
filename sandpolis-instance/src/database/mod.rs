@@ -394,7 +394,8 @@ impl RealmDatabase {
     /// belong to *this process* rather than to the estate. Permitted callers,
     /// and nothing else:
     ///
-    /// - [`crate::InstanceManager::new`] — this instance's own identity row
+    /// - [`crate::InstanceManager::new`] — this instance's own identity row, and
+    ///   the marker saying which row that is
     /// - [`crate::realm::RealmManager::new`] — this instance's own certificates
     /// - [`crate::network::NetworkManager`] — live connection bookkeeping
     /// - `sandpolis_server::ServerManager::new` — purging stale connection rows

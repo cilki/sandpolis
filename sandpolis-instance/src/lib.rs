@@ -1,4 +1,4 @@
-use crate::database::{DatabaseManager, Resident, ResidentVec};
+use crate::database::{DataCondition, DatabaseManager, Resident, ResidentVec};
 use crate::domain::DomainData;
 use crate::realm::RealmName;
 use anyhow::{Result, bail};
@@ -436,6 +436,14 @@ inventory::submit! {
         |r| r.register_scoped::<InstanceManagerData>(|d| d._instance_id))
 }
 
+/// Which [`InstanceManagerData`] row describes this instance itself, as
+/// opposed to the ones replicated in for every other instance it knows about.
+///
+/// Instance-local bookkeeping: there is exactly one row, written on first
+/// start, and it is never registered for sync.
+#[data(instance, defaults)]
+pub struct InstanceIdentityData {}
+
 /// The sync `model_id` for [`InstanceManagerData`], used by clients to subscribe to
 /// the set of known instances.
 pub fn instance_manager_model_id() -> u32 {
@@ -464,36 +472,14 @@ impl InstanceManager {
     /// identity says about it forever after.
     pub async fn new(database: DatabaseManager, instance_type: InstanceType) -> Result<Self> {
         let realm = database.realm(RealmName::default())?;
+        let instance_id = Self::identity(&realm, instance_type)?;
 
-        // The identity row is generated on first start and reused forever after.
-        // It is seeded as instance-local bookkeeping rather than through the
-        // scope gate: the row's own scope is this instance's id, which isn't
-        // known until the row exists.
-        {
-            let r = realm.r_transaction()?;
-            let existing = r
-                .scan()
-                .primary::<InstanceManagerData>()?
-                .all()?
-                .next()
-                .transpose()?;
-            drop(r);
-
-            if existing.is_none() {
-                let rw = realm.local_write()?;
-                rw.insert(InstanceManagerData::scoped(InstanceId::random(
-                    instance_type,
-                )))?;
-                rw.commit()?;
-            }
-        }
-
-        let data: Resident<InstanceManagerData> = realm
-            .resident_with((), || {
-                InstanceManagerData::scoped(InstanceId::random(instance_type))
-            })?;
-
-        let instance_id = data.read()._instance_id;
+        // The table holds a row for every instance replicated in, so the
+        // resident has to be pinned to this instance's own.
+        let data: Resident<InstanceManagerData> = realm.resident_with(
+            DataCondition::equal(InstanceManagerDataKey::_instance_id, instance_id),
+            || InstanceManagerData::scoped(instance_id),
+        )?;
 
         // A data directory belongs to the instance that created it. Running a
         // different instance against it would mean two instances sharing one
@@ -535,6 +521,65 @@ impl InstanceManager {
             instances: realm.resident_vec(())?,
             realm,
         })
+    }
+
+    /// This instance's id: generated on first start, read back on every start
+    /// after.
+    ///
+    /// [`InstanceManagerData`] can't answer that on its own, since it holds a
+    /// row for every instance replicated in. [`InstanceIdentityData`] records
+    /// which row is ours. Both are seeded as instance-local bookkeeping rather
+    /// than through the scope gate: the identity row's scope is this instance's
+    /// id, which isn't known until the row exists.
+    fn identity(
+        realm: &crate::database::RealmDatabase,
+        instance_type: InstanceType,
+    ) -> Result<InstanceId> {
+        let r = realm.r_transaction()?;
+        let marked: Vec<InstanceIdentityData> =
+            r.scan().primary()?.all()?.collect::<Result<_, _>>()?;
+        match marked.as_slice() {
+            [identity] => return Ok(identity._instance_id),
+            [] => {}
+            _ => bail!("This data directory records more than one instance identity"),
+        }
+
+        let rows: Vec<InstanceManagerData> =
+            r.scan().primary()?.all()?.collect::<Result<_, _>>()?;
+        drop(r);
+
+        let rw = realm.local_write()?;
+        let instance_id = match rows.as_slice() {
+            // First start.
+            [] => {
+                let id = InstanceId::random(instance_type);
+                rw.insert(InstanceManagerData::scoped(id))?;
+                id
+            }
+            // A data directory from before the identity marker existed. With
+            // nothing replicated in yet, the only row is ours.
+            [only] => only._instance_id,
+            // Otherwise ours is the one of our own type, as long as that's
+            // unambiguous. Guessing wrong would mean impersonating another
+            // instance, so refuse rather than pick one.
+            _ => {
+                let mut ours = rows
+                    .iter()
+                    .filter(|row| row._instance_id.is_type(instance_type));
+                match (ours.next(), ours.next()) {
+                    (Some(row), None) => row._instance_id,
+                    _ => bail!(
+                        "This data directory holds {} instance records and none can be \
+                         told apart as this {instance_type:?}'s own identity",
+                        rows.len()
+                    ),
+                }
+            }
+        };
+        rw.insert(InstanceIdentityData::scoped(instance_id))?;
+        rw.commit()?;
+
+        Ok(instance_id)
     }
 
     /// What this process is: agent, client, or server.
@@ -716,5 +761,75 @@ mod test_layer_version {
             older.cmp(&LayerVersion::try_from("1.2.3-alpha".to_string()).unwrap()),
             Ordering::Equal
         );
+    }
+}
+
+#[cfg(test)]
+mod test_identity {
+    use super::*;
+    use crate::database::RealmDatabase;
+    use crate::test_db;
+
+    fn realm() -> Result<RealmDatabase> {
+        let database = test_db!(InstanceManagerData, InstanceIdentityData);
+        database.realm(RealmName::default())
+    }
+
+    /// Stand-in for a row the sync engine applied for some other instance.
+    fn replicate(realm: &RealmDatabase, id: InstanceId) -> Result<()> {
+        let rw = realm.local_write()?;
+        rw.insert(InstanceManagerData::scoped(id))?;
+        rw.commit()?;
+        Ok(())
+    }
+
+    /// Once another instance's row has replicated in, the next start must
+    /// still find its own identity rather than tripping over the extra row.
+    #[test]
+    fn test_survives_replicated_rows() -> Result<()> {
+        let realm = realm()?;
+        let id = InstanceManager::identity(&realm, InstanceType::Server)?;
+        assert!(id.is_server());
+
+        replicate(&realm, InstanceId::random(InstanceType::Agent))?;
+        replicate(&realm, InstanceId::random(InstanceType::Server))?;
+
+        assert_eq!(InstanceManager::identity(&realm, InstanceType::Server)?, id);
+        Ok(())
+    }
+
+    /// A data directory written before the marker existed adopts the one row
+    /// of its own type.
+    #[test]
+    fn test_adopts_unmarked_identity() -> Result<()> {
+        let realm = realm()?;
+        let own = InstanceId::random(InstanceType::Server);
+        replicate(&realm, own)?;
+        replicate(&realm, InstanceId::random(InstanceType::Agent))?;
+
+        assert_eq!(
+            InstanceManager::identity(&realm, InstanceType::Server)?,
+            own
+        );
+
+        // ...and records it, so later rows of the same type can't confuse it.
+        replicate(&realm, InstanceId::random(InstanceType::Server))?;
+        assert_eq!(
+            InstanceManager::identity(&realm, InstanceType::Server)?,
+            own
+        );
+        Ok(())
+    }
+
+    /// With no marker and two candidates, guessing could mean impersonating
+    /// another instance.
+    #[test]
+    fn test_refuses_ambiguous_identity() -> Result<()> {
+        let realm = realm()?;
+        replicate(&realm, InstanceId::random(InstanceType::Client))?;
+        replicate(&realm, InstanceId::random(InstanceType::Client))?;
+
+        assert!(InstanceManager::identity(&realm, InstanceType::Client).is_err());
+        Ok(())
     }
 }

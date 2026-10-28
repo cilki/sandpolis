@@ -1,8 +1,8 @@
-use super::{ActiveState, SystemdUnitData};
+use super::{ActiveState, SystemdUnitData, SystemdUnitDataKey};
 use anyhow::Result;
 use sandpolis_agent::Collector;
 use sandpolis_instance::InstanceId;
-use sandpolis_instance::database::{RealmDatabase, ResidentVec};
+use sandpolis_instance::database::{DataCondition, RealmDatabase, ResidentVec};
 use sandpolis_instance::notification::{Notification, notify};
 use std::str::FromStr;
 use tracing::trace;
@@ -44,7 +44,10 @@ pub struct SystemdCollector {
 impl SystemdCollector {
     pub fn new(db: RealmDatabase, instance_id: InstanceId) -> Result<Self> {
         Ok(Self {
-            data: db.resident_vec(())?,
+            data: db.resident_vec(DataCondition::equal(
+                SystemdUnitDataKey::_instance_id,
+                instance_id,
+            ))?,
             connection: None,
             instance_id,
         })

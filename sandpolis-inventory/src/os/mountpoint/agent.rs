@@ -1,8 +1,8 @@
-use super::MountpointData;
+use super::{MountpointData, MountpointDataKey};
 use anyhow::Result;
 use sandpolis_agent::Collector;
 use sandpolis_instance::InstanceId;
-use sandpolis_instance::database::{Data, RealmDatabase, ResidentVec};
+use sandpolis_instance::database::{Data, DataCondition, RealmDatabase, ResidentVec};
 use sysinfo::Disks;
 use tracing::trace;
 
@@ -24,7 +24,10 @@ impl MountpointCollector {
     pub fn new(db: RealmDatabase, instance_id: InstanceId) -> Result<Self> {
         Ok(Self {
             disks: Disks::new(),
-            data: db.resident_vec(())?,
+            data: db.resident_vec(DataCondition::equal(
+                MountpointDataKey::_instance_id,
+                instance_id,
+            ))?,
             instance_id,
         })
     }
