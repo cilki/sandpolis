@@ -116,6 +116,16 @@ pub enum DesktopStreamResponse {
     Stopped,
 }
 
+/// Whether `response` is a frame, which every desktop stream responder sends
+/// unreliably: a frame is worth nothing once the next exists, so it goes as
+/// datagrams that congestion drops rather than queueing behind the frames
+/// before it. Every frame is the whole screen, so a lost one is made good by
+/// the next. `Started` and `Stopped` stay reliable.
+#[cfg(any(feature = "agent", all(feature = "server", feature = "probe")))]
+pub(crate) fn is_frame(response: &DesktopStreamResponse) -> bool {
+    matches!(response, DesktopStreamResponse::Frame(_))
+}
+
 #[cfg(feature = "agent")]
 mod agent {
     use super::*;
@@ -191,6 +201,10 @@ mod agent {
                 }
             }
             Ok(())
+        }
+
+        fn unreliable(response: &Self::Out) -> bool {
+            is_frame(response)
         }
     }
 

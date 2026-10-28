@@ -17,8 +17,15 @@
 //! QUIC flow control does stall the others until it drains, which is the one
 //! place head-of-line blocking survives.
 //!
+//! A message marked [`unreliable`](StreamMessage::unreliable) skips all of
+//! that: the driver cuts it into datagrams on the spot (see
+//! [`super::datagram`]) and one more task puts the peer's back together and
+//! dispatches them. It never opens a QUIC stream, so the stream it belongs to
+//! must already have been opened by a reliable message.
+//!
 //! [`StreamMessage`]: super::stream::StreamMessage
 
+use super::datagram::{self, Reassembler};
 use super::stream::{StreamId, StreamMessage, StreamRegistry};
 use super::webtransport::{Message, Reader, Session, Writer};
 use super::{ConnectionData, InstanceConnection, RegisterResponders};
@@ -114,9 +121,41 @@ impl InstanceConnection {
             }
         });
 
+        // And the peer's datagrams are put back together into messages.
+        tokio::spawn({
+            let shared = shared.clone();
+            async move {
+                let mut reassembler = Reassembler::default();
+                loop {
+                    let received = tokio::select! {
+                        _ = shared.cancel.cancelled() => break,
+                        received = shared.connection.receive_datagram() => received,
+                    };
+                    let Ok(datagram) = received else {
+                        break;
+                    };
+                    let Some(payload) = reassembler.push(datagram.payload()) else {
+                        continue;
+                    };
+                    let Ok(mut message) = serde_cbor::from_slice::<StreamMessage>(&payload) else {
+                        continue;
+                    };
+                    message.unreliable = true;
+                    shared
+                        .streams
+                        .record_rx(message.stream_id, payload.len() as u64);
+                    // Inline rather than spawned, so they're handed on in the
+                    // order they arrived; a handler slower than the sender
+                    // just means QUIC drops the oldest of what is waiting.
+                    shared.streams.dispatch(message).await;
+                }
+            }
+        });
+
         // Spawn the driver, which owns the control stream and the connection.
         tokio::spawn(async move {
             let (mut control_tx, mut control_rx) = session.control.split();
+            let mut next_datagram: u32 = 0;
 
             let mut keepalive = tokio::time::interval(super::KEEPALIVE_INTERVAL);
             keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -140,6 +179,21 @@ impl InstanceConnection {
                     // stream's writer, opened on first use.
                     Some(msg) = stream_rx.recv() => {
                         let data = serde_cbor::to_vec(&msg).unwrap();
+
+                        if msg.unreliable {
+                            match send_unreliable(&shared.connection, &mut next_datagram, &data) {
+                                Unreliable::Sent => {
+                                    shared.streams.record_tx(msg.stream_id, data.len() as u64);
+                                    continue;
+                                }
+                                Unreliable::Dropped => {
+                                    trace!(stream_id = ?msg.stream_id, "Dropped an unreliable message");
+                                    continue;
+                                }
+                                // Goes on the stream like any other.
+                                Unreliable::Reliable => {}
+                            }
+                        }
                         shared.streams.record_tx(msg.stream_id, data.len() as u64);
 
                         let writer = shared
@@ -208,6 +262,49 @@ impl InstanceConnection {
             streams,
         })
     }
+}
+
+/// What became of a message offered to [`send_unreliable`].
+enum Unreliable {
+    /// Every fragment is queued on the connection.
+    Sent,
+    /// Nothing was sent: QUIC couldn't take the whole message right now.
+    Dropped,
+    /// The session can't carry this message as datagrams (the peer doesn't
+    /// take them, or it's too big), so it has to go on its stream after all.
+    Reliable,
+}
+
+/// Send an encoded message as datagrams, whole or not at all.
+///
+/// QUIC makes room for a new datagram by dropping the oldest still waiting to
+/// go out, which would leave the peer with pieces of messages it can never
+/// finish. So a message is only sent when there is room for all of it, and
+/// dropped otherwise: the stream marked it as one that may be lost, and under
+/// congestion the next one will be newer anyway.
+fn send_unreliable(connection: &Connection, next: &mut u32, data: &[u8]) -> Unreliable {
+    let Some(max) = connection.max_datagram_size() else {
+        return Unreliable::Reliable;
+    };
+    let Some(fragments) = datagram::fragment(*next, data, max) else {
+        return Unreliable::Reliable;
+    };
+    *next = next.wrapping_add(1);
+
+    // WebTransport puts the session id in front of each one, which the
+    // buffer counts; a varint, so a few bytes at most.
+    let needed: usize = fragments.iter().map(|f| f.len() + 8).sum();
+    if connection.quic_connection().datagram_send_buffer_space() < needed {
+        return Unreliable::Dropped;
+    }
+    for fragment in fragments {
+        // Only if the path MTU shrank since `max` was read, or the connection
+        // is going.
+        if connection.send_datagram(fragment).is_err() {
+            return Unreliable::Dropped;
+        }
+    }
+    Unreliable::Sent
 }
 
 /// Start the writer for `stream_id` and return its queue.
@@ -421,6 +518,20 @@ mod test {
             server_handlers: &[&dyn RegisterResponders],
             instance_handlers: &[&dyn RegisterResponders],
         ) -> Result<(Arc<InstanceConnection>, Arc<InstanceConnection>)> {
+            let (server, attached, _) = self
+                .attach_quic(instance, server_handlers, instance_handlers)
+                .await?;
+            Ok((server, attached))
+        }
+
+        /// [`attach`](Self::attach), also handing back the instance's QUIC
+        /// connection, so a test can see what actually crossed the wire.
+        async fn attach_quic(
+            &self,
+            instance: InstanceId,
+            server_handlers: &[&dyn RegisterResponders],
+            instance_handlers: &[&dyn RegisterResponders],
+        ) -> Result<(Arc<InstanceConnection>, Arc<InstanceConnection>, Connection)> {
             let server_id = self.server_id;
             let accept = async {
                 let request = self.endpoint.accept().await.await?;
@@ -448,6 +559,7 @@ mod test {
                 server_handlers,
             );
 
+            let quic = instance_session.connection.clone();
             let mut row = ConnectionData::scoped(instance);
             row.remote_instance = Some(remote);
             let attached = InstanceConnection::session(
@@ -458,7 +570,7 @@ mod test {
                 instance_handlers,
             );
 
-            Ok((server, attached))
+            Ok((server, attached, quic))
         }
     }
 
@@ -666,6 +778,159 @@ mod test {
 
         client.close_stream(id);
         until(|| echo.live() == 0).await;
+        Ok(())
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct Size(usize);
+
+    #[derive(Serialize, Deserialize)]
+    struct Blob(Vec<u8>);
+
+    fn blob(len: usize) -> Vec<u8> {
+        (0..len).map(|i| (i % 251) as u8).collect()
+    }
+
+    /// Answers a [`Size`] with a blob that long, marked as one that may be lost.
+    struct BlobResponder;
+
+    impl Stream for BlobResponder {
+        fn tag() -> u32 {
+            0x7e57_0003
+        }
+    }
+
+    impl StreamResponder for BlobResponder {
+        type In = Size;
+        type Out = Blob;
+
+        async fn on_message(&self, size: Size, sender: Sender<Blob>) -> Result<()> {
+            sender.send(Blob(blob(size.0))).await?;
+            Ok(())
+        }
+
+        fn unreliable(_: &Blob) -> bool {
+            true
+        }
+    }
+
+    struct Blobs;
+
+    impl RegisterResponders for Blobs {
+        fn register_responders(&self, registry: &StreamRegistry) {
+            registry.register_responder(|| BlobResponder);
+        }
+    }
+
+    struct BlobRequester {
+        blobs: mpsc::UnboundedSender<Vec<u8>>,
+    }
+
+    impl Stream for BlobRequester {
+        fn tag() -> u32 {
+            BlobResponder::tag()
+        }
+    }
+
+    impl StreamRequester for BlobRequester {
+        type In = Blob;
+        type Out = Size;
+
+        async fn new(_: Size, _: Sender<Size>) -> Result<Self> {
+            bail!("the tests build this directly")
+        }
+
+        async fn on_message(&self, blob: Blob, _: Sender<Size>) -> Result<()> {
+            self.blobs.send(blob.0)?;
+            Ok(())
+        }
+    }
+
+    /// Ask `from` for a blob of `len` bytes, addressed to `to` if it is to be
+    /// relayed, and return what arrived.
+    async fn fetch_blob(
+        from: &InstanceConnection,
+        to: Option<InstanceId>,
+        len: usize,
+    ) -> Result<Vec<u8>> {
+        let (blobs, mut received) = mpsc::unbounded_channel();
+        let requester = BlobRequester { blobs };
+        match to {
+            Some(to) => from.open_stream_to(to, requester, Size(len)).await?,
+            None => from.open_stream(requester, Size(len)).await?,
+        };
+        timeout(Duration::from_secs(10), received.recv())
+            .await?
+            .ok_or_else(|| anyhow!("the stream ended without a blob"))
+    }
+
+    fn datagrams_received(connection: &Connection) -> u64 {
+        connection.quic_connection().stats().frame_rx.datagram
+    }
+
+    /// A response the responder marks unreliable crosses the session as
+    /// datagrams — however many it takes — and arrives whole.
+    #[tokio::test]
+    async fn unreliable_responses_travel_as_datagrams() -> Result<()> {
+        let harness = Harness::new()?;
+        let (_server, client, quic) = harness
+            .attach_quic(ClientId::random().into(), &[&Blobs], &[])
+            .await?;
+
+        assert_eq!(fetch_blob(&client, None, 10).await?, blob(10));
+        let single = datagrams_received(&quic);
+        assert!(single >= 1, "the small blob came as a datagram");
+
+        // Many times the size of a datagram.
+        assert_eq!(fetch_blob(&client, None, 20_000).await?, blob(20_000));
+        assert!(
+            datagrams_received(&quic) - single >= 20_000 / 1500,
+            "the large blob came in fragments"
+        );
+        Ok(())
+    }
+
+    /// A relaying server forwards an unreliable response the way it came in,
+    /// so it is datagrams on both legs.
+    #[tokio::test]
+    async fn relayed_unreliable_responses_stay_datagrams() -> Result<()> {
+        let harness = Harness::new()?;
+        let agent_id: InstanceId = AgentId::random().into();
+
+        let (server_client, client, quic) = harness
+            .attach_quic(ClientId::random().into(), &[], &[])
+            .await?;
+        let (server_agent, _agent) = harness.attach(agent_id, &[], &[&Blobs]).await?;
+
+        let inbound = Arc::new(RwLock::new(vec![
+            server_client.clone(),
+            server_agent.clone(),
+        ]));
+        let relay = Arc::new(Relay::new(inbound));
+        server_client.streams.set_relay(Arc::downgrade(&relay));
+        server_agent.streams.set_relay(Arc::downgrade(&relay));
+
+        assert_eq!(
+            fetch_blob(&client, Some(agent_id), 20_000).await?,
+            blob(20_000)
+        );
+        assert!(datagrams_received(&quic) >= 20_000 / 1500);
+        Ok(())
+    }
+
+    /// A message too big to be worth cutting into datagrams goes on its
+    /// stream instead, so marking a response unreliable never makes it
+    /// undeliverable.
+    #[tokio::test]
+    async fn oversized_unreliable_responses_go_reliably() -> Result<()> {
+        let harness = Harness::new()?;
+        let (_server, client, quic) = harness
+            .attach_quic(ClientId::random().into(), &[&Blobs], &[])
+            .await?;
+
+        let len = datagram::MAX_FRAGMENTS * 1500;
+        assert_eq!(fetch_blob(&client, None, len).await?, blob(len));
+        assert_eq!(datagrams_received(&quic), 0);
         Ok(())
     }
 

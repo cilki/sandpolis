@@ -36,6 +36,8 @@ pub fn collected_responders() -> impl Iterator<Item = &'static dyn RegisterRespo
     inventory::iter::<ResponderRegistration>().map(|r| r.0)
 }
 
+#[cfg(any(feature = "agent", feature = "client", feature = "server"))]
+pub mod datagram;
 pub mod liveness;
 pub mod messages;
 pub mod ping;

@@ -127,6 +127,10 @@ mod server {
             }
             Ok(())
         }
+
+        fn unreliable(response: &Self::Out) -> bool {
+            crate::session::is_frame(response)
+        }
     }
 
     impl Drop for RdpStreamResponder {

@@ -153,8 +153,12 @@ first `StreamMessage` for a `StreamId` opens one, replies come back on it, and
 `StreamRegistry::close` finishes it — which is how the peer learns to drop its
 responder, and how a server follows the close to the connection it relayed the
 stream to. So one stream's backlog never delays another on the wire, and the
-relay and the stream registry still only see `StreamMessage`s. Desktop frames
-over datagrams remain to be done. Both listeners share one `rustls`
+relay and the stream registry still only see `StreamMessage`s. A responder can
+mark a response _unreliable_ (`StreamResponder::unreliable`, which desktop
+frames are): it skips the stream's QUIC stream and goes as datagrams instead,
+fragmented and delivered whole or not at all (`network::datagram`), and a
+relay forwards it the same way. One too big for that (over ~90 KiB) still
+goes reliably. Both listeners share one `rustls`
 configuration — the same realm CAs verify peers, the same per-realm server
 certificates are presented by SNI — so a realm cert attaches an instance to
 either. A deployment therefore needs UDP open as well as TCP.

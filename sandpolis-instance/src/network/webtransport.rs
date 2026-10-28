@@ -69,9 +69,17 @@ fn transport_config() -> wtransport::quinn::TransportConfig {
         ))
         // Unidirectional streams are left at the default: nothing of ours is
         // one, but the HTTP/3 session underneath runs on a few.
-        .max_concurrent_bidi_streams(MAX_CONCURRENT_STREAMS.into());
+        .max_concurrent_bidi_streams(MAX_CONCURRENT_STREAMS.into())
+        .datagram_send_buffer_size(DATAGRAM_SEND_BUFFER);
     config
 }
+
+/// How many bytes of datagrams may wait to go out. Unreliable messages are
+/// only sent when they fit whole (see `super::socket`), so this is what
+/// bounds how stale one can be by the time it leaves: room for a couple of
+/// the largest ([`super::datagram::MAX_FRAGMENTS`] full datagrams each), not
+/// quinn's default megabyte, which at a few Mbit/s is seconds of old frames.
+const DATAGRAM_SEND_BUFFER: usize = 256 << 10;
 
 /// The kind byte that leads every frame.
 mod kind {

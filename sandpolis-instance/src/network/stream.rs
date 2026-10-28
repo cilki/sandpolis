@@ -52,6 +52,16 @@ pub struct StreamMessage {
     /// [`StreamMessage::to`] so this is never forgotten.
     #[serde(default)]
     pub hops: u8,
+
+    /// Whether this message may be lost on the way, in exchange for never
+    /// waiting behind the stream's other messages: the transport sends it as
+    /// datagrams rather than on the stream's QUIC stream (see
+    /// [`super::datagram`]). Set from [`StreamResponder::unreliable`].
+    ///
+    /// Not part of the encoding, since how a message arrived says which it
+    /// was; a relay forwards a message the same way it came in.
+    #[serde(skip)]
+    pub unreliable: bool,
 }
 
 /// The longest relay path the network is expected to need: client → global
@@ -78,7 +88,14 @@ impl StreamMessage {
             payload,
             dst,
             hops: 0,
+            unreliable: false,
         }
+    }
+
+    /// The same message, marked as one that may be lost.
+    pub fn with_unreliable(mut self, unreliable: bool) -> Self {
+        self.unreliable = unreliable;
+        self
     }
 }
 
@@ -141,6 +158,28 @@ pub trait StreamResponder: Stream + Send + Sync + 'static {
     ) -> impl Future<Output = Result<()>> + Send {
         async { Ok(()) }
     }
+
+    /// Whether `response` may be lost on its way to the requester.
+    ///
+    /// For a response that is worthless once the next one exists, such as a
+    /// desktop frame: it travels as datagrams, so it never waits behind the
+    /// ones before it, and congestion or loss drops it instead of building a
+    /// backlog. Such responses can arrive out of order with respect to the
+    /// stream's reliable ones, and not at all. A response too big to cut into
+    /// datagrams, or on a session that can't carry them, is sent reliably
+    /// anyway.
+    fn unreliable(_response: &Self::Out) -> bool
+    where
+        Self: Sized,
+    {
+        false
+    }
+}
+
+/// One encoded message a stream handler sends, and whether it may be lost.
+pub(crate) struct RawOut {
+    payload: Vec<u8>,
+    unreliable: bool,
 }
 
 /// Internal object-safe trait for stream handler storage.
@@ -149,7 +188,7 @@ pub(crate) trait RawStreamHandler: Send + Sync + 'static {
     fn on_receive_raw(
         &self,
         payload: &[u8],
-        raw_sender: Sender<Vec<u8>>,
+        raw_sender: Sender<RawOut>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>;
 }
 
@@ -195,7 +234,7 @@ pub struct StreamCounters {
 ///
 /// This is transport-agnostic and works with `StreamMessage` payloads.
 pub struct StreamRegistry {
-    streams: RwLock<HashMap<StreamId, (Arc<dyn RawStreamHandler>, Sender<Vec<u8>>)>>,
+    streams: RwLock<HashMap<StreamId, (Arc<dyn RawStreamHandler>, Sender<RawOut>)>>,
     /// Factories for creating responders, keyed by type tag.
     responder_factories: RwLock<HashMap<u32, Box<dyn RawResponderFactory>>>,
     /// Sender for outgoing stream messages.
@@ -355,6 +394,17 @@ impl StreamRegistry {
             return;
         }
 
+        // A stream is only ever opened reliably, so an unreliable message for
+        // a stream nobody here knows is a straggler: one that arrived after
+        // its stream was closed, or overtook the message that opens it.
+        if message.unreliable {
+            tracing::trace!(
+                stream_id = ?message.stream_id,
+                "Dropping an unreliable message for an unknown stream"
+            );
+            return;
+        }
+
         // Otherwise create a responder from a registered factory.
         let type_tag = message.stream_id.tag();
         let factory_opt = {
@@ -364,7 +414,7 @@ impl StreamRegistry {
 
         if let Some(handler) = factory_opt {
             // Create channel for response messages from the handler
-            let (response_tx, mut response_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(32);
+            let (response_tx, mut response_rx) = tokio::sync::mpsc::channel::<RawOut>(32);
 
             // Register the new responder
             self.streams
@@ -378,8 +428,9 @@ impl StreamRegistry {
             let tx = self.tx.clone();
             let stream_id = message.stream_id;
             tokio::spawn(async move {
-                while let Some(payload) = response_rx.recv().await {
-                    let msg = StreamMessage::local(stream_id, payload);
+                while let Some(out) = response_rx.recv().await {
+                    let msg = StreamMessage::local(stream_id, out.payload)
+                        .with_unreliable(out.unreliable);
                     if tx.send(msg).await.is_err() {
                         break;
                     }
@@ -412,7 +463,7 @@ impl StreamRegistry {
         let id = S::generate_id();
 
         // Create channel for response messages from the handler
-        let (response_tx, mut response_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(32);
+        let (response_tx, mut response_rx) = tokio::sync::mpsc::channel::<RawOut>(32);
 
         // Wrap the typed handler in the object-safe wrapper
         let wrapped: Arc<dyn RawStreamHandler> = Arc::new(StreamRequesterWrapper::new(handler));
@@ -425,8 +476,9 @@ impl StreamRegistry {
         let tx = self.tx.clone();
         let stream_id = id;
         tokio::spawn(async move {
-            while let Some(payload) = response_rx.recv().await {
-                let msg = StreamMessage::routed(stream_id, payload, dst);
+            while let Some(out) = response_rx.recv().await {
+                let msg = StreamMessage::routed(stream_id, out.payload, dst)
+                    .with_unreliable(out.unreliable);
                 if tx.send(msg).await.is_err() {
                     break;
                 }
@@ -670,6 +722,7 @@ impl Relay {
                     payload: message.payload.clone(),
                     dst: Some(target),
                     hops: message.hops + 1,
+                    unreliable: message.unreliable,
                 })
                 .await;
             return true;
@@ -679,10 +732,10 @@ impl Relay {
         let origin = self.routes.lock().unwrap().get(&message.stream_id).cloned();
         if let Some(origin) = origin {
             let _ = origin
-                .send(StreamMessage::local(
-                    message.stream_id,
-                    message.payload.clone(),
-                ))
+                .send(
+                    StreamMessage::local(message.stream_id, message.payload.clone())
+                        .with_unreliable(message.unreliable),
+                )
                 .await;
             return true;
         }
@@ -710,7 +763,7 @@ where
     fn on_receive_raw(
         &self,
         payload: &[u8],
-        raw_sender: Sender<Vec<u8>>,
+        raw_sender: Sender<RawOut>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
         let msg = match serde_cbor::from_slice::<T::In>(payload) {
             Ok(msg) => msg,
@@ -723,11 +776,18 @@ where
         // Create a typed sender that serializes to raw bytes
         let (typed_tx, mut typed_rx) = tokio::sync::mpsc::channel::<T::Out>(32);
 
-        // Spawn task to forward typed messages to raw sender
+        // Spawn task to forward typed messages to raw sender. Requests are
+        // always reliable: they're what opens the stream and drives it.
         tokio::spawn(async move {
             while let Some(typed_msg) = typed_rx.recv().await {
-                if let Ok(bytes) = serde_cbor::to_vec(&typed_msg)
-                    && raw_sender.send(bytes).await.is_err()
+                if let Ok(payload) = serde_cbor::to_vec(&typed_msg)
+                    && raw_sender
+                        .send(RawOut {
+                            payload,
+                            unreliable: false,
+                        })
+                        .await
+                        .is_err()
                 {
                     break;
                 }
@@ -761,7 +821,7 @@ where
     fn on_receive_raw(
         &self,
         payload: &[u8],
-        raw_sender: Sender<Vec<u8>>,
+        raw_sender: Sender<RawOut>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
         let msg = match serde_cbor::from_slice::<T::In>(payload) {
             Ok(msg) => msg,
@@ -777,8 +837,15 @@ where
         // Spawn task to forward typed messages to raw sender
         tokio::spawn(async move {
             while let Some(typed_msg) = typed_rx.recv().await {
-                if let Ok(bytes) = serde_cbor::to_vec(&typed_msg)
-                    && raw_sender.send(bytes).await.is_err()
+                let unreliable = T::unreliable(&typed_msg);
+                if let Ok(payload) = serde_cbor::to_vec(&typed_msg)
+                    && raw_sender
+                        .send(RawOut {
+                            payload,
+                            unreliable,
+                        })
+                        .await
+                        .is_err()
                 {
                     break;
                 }
@@ -878,7 +945,7 @@ mod tests {
         };
         let wrapper = StreamResponderWrapper::new(stream);
 
-        let (tx, _rx) = tokio::sync::mpsc::channel::<Vec<u8>>(32);
+        let (tx, _rx) = tokio::sync::mpsc::channel::<RawOut>(32);
         let payload = serde_cbor::to_vec(&TestMessage { value: 42 }).unwrap();
         wrapper.on_receive_raw(&payload, tx.clone()).await;
         wrapper.on_receive_raw(&payload, tx).await;
@@ -886,6 +953,34 @@ mod tests {
         // Give time for async processing
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
         assert_eq!(received_count.load(Ordering::SeqCst), 84);
+    }
+
+    /// An unreliable message never opens a stream: one for a stream nobody
+    /// knows is a straggler from a closed stream, and must not bring a
+    /// responder back to life. The same message sent reliably does open one.
+    #[tokio::test]
+    async fn unreliable_messages_never_open_streams() {
+        let received_count = Arc::new(AtomicUsize::new(0));
+        let (tx, _rx) = tokio::sync::mpsc::channel(32);
+        let registry = StreamRegistry::new(tx);
+        registry.register_responder({
+            let received_count = received_count.clone();
+            move || TestStreamResponder {
+                received_count: received_count.clone(),
+            }
+        });
+
+        let id = StreamId((TestStreamResponder::tag() as u64) << 32 | 1);
+        let payload = serde_cbor::to_vec(&TestMessage { value: 1 }).unwrap();
+
+        registry
+            .dispatch(StreamMessage::local(id, payload.clone()).with_unreliable(true))
+            .await;
+        assert_eq!(received_count.load(Ordering::SeqCst), 0);
+        assert!(registry.streams.read().unwrap().is_empty());
+
+        registry.dispatch(StreamMessage::local(id, payload)).await;
+        assert_eq!(received_count.load(Ordering::SeqCst), 1);
     }
 }
 
