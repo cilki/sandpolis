@@ -643,35 +643,9 @@ where
 
     fn set_revision(&mut self, revision: DataRevision);
 
-    fn revision_key() -> KeyDefinition<KeyOptions> {
-        KeyDefinition::new(
-            Self::native_model_id(),
-            Self::native_model_version(),
-            "_revision",
-            <DataRevision>::key_names(),
-            KeyOptions {
-                unique: false,
-                optional: false,
-            },
-        )
-    }
-
     fn creation(&self) -> DataCreation;
 
     fn set_creation(&mut self, creation: DataCreation);
-
-    fn creation_key() -> KeyDefinition<KeyOptions> {
-        KeyDefinition::new(
-            Self::native_model_id(),
-            Self::native_model_version(),
-            "_creation",
-            <DataCreation>::key_names(),
-            KeyOptions {
-                unique: false,
-                optional: false,
-            },
-        )
-    }
 
     /// If an expiration timestamp is given, previous revisions of the `Data`
     /// will be kept until the expiration date. Otherwise, only the latest

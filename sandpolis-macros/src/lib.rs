@@ -191,23 +191,23 @@ pub fn data(args: TokenStream, input: TokenStream) -> TokenStream {
                 .expect("Failed to parse _id field"),
         );
 
-        // Add revision field
+        // Add revision and creation fields. Neither is a secondary key: nothing
+        // looks a record up by them (revision checks and history both go
+        // through the primary key), and every index costs a table write on
+        // each insert, update and delete of every record.
         fields.named.push(
             Field::parse_named
                 .parse2(quote! {
                     /// Revision
-                    #[secondary_key]
                     pub _revision: #krate::database::DataRevision
                 })
                 .expect("Failed to parse _revision field"),
         );
 
-        // Add creation field
         fields.named.push(
             Field::parse_named
                 .parse2(quote! {
                     /// Creation timestamp
-                    #[secondary_key]
                     pub _creation: #krate::database::DataCreation
                 })
                 .expect("Failed to parse _creation field"),
