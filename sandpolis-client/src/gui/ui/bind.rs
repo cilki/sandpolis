@@ -19,7 +19,7 @@ use std::sync::Arc;
 pub struct BindText(pub Arc<dyn Fn() -> String + Send + Sync>);
 
 /// Produces an empty-string projection, so `BindText` satisfies the
-/// `Clone + Default` bound of `bsn!`'s `template_value` (which immediately
+/// `Clone + Default` bound `bsn!` places on component values (which immediately
 /// overwrites the default with the real projection).
 impl Default for BindText {
     fn default() -> Self {

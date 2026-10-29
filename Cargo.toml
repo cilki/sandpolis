@@ -134,10 +134,15 @@ tui-popup = { version = "0.7.7" }
 
 # GUI client exclusive
 alacritty_terminal = { version = "0.26.0", default-features = false }
-bevy = { version = "0.19.0", features = ["bevy_dev_tools", "bevy_scene"] }
-bevy_svg = { git = "https://github.com/cilki/bevy_svg", features = ["2d"] }
-bevy_rapier2d = "0.36.0"
-bevy_ui_widgets = { version = "0.19.0" }
+bevy = { version = "0.20.1", features = [
+  "bevy_dev_tools",
+  "bevy_scene",
+  # `DiagnosticsOverlay` (F3 in the client) moved behind this in 0.20
+  "render_dev_tools",
+] }
+bevy_svg = { git = "https://github.com/Weasy666/bevy_svg", rev = "844cd956ea2ffd78020b87098e43c20dd7d59297", features = ["2d"] }
+bevy_rapier2d = "0.37.0"
+bevy_ui_widgets = { version = "0.20.1" }
 resvg = { version = "0.49.0" }
 include_dir = { version = "0.7" }
 

@@ -1,7 +1,7 @@
-//! Bevy 0.19 `bsn!` scene authoring for the Sandpolis GUI.
+//! `bsn!` scene authoring for the Sandpolis GUI.
 //!
-//! Bevy 0.19 introduced next-generation scenes: the [`bsn!`] macro builds an
-//! entity tree declaratively, and [`Commands::spawn_scene`] spawns it. This module
+//! Bevy's next-generation scenes: the [`bsn!`] macro builds an entity tree
+//! declaratively, and [`Commands::spawn_scene`] spawns it. This module
 //! establishes the conventions for using it alongside the codebase's existing
 //! retained-mode theming, and provides the shared scene-returning widget helpers
 //! ([`text_line`], [`bound_text`], [`button`], [`text_input`],
@@ -24,19 +24,22 @@
 //!   [`ThemedText`], [`ThemedBorder`]) so the recolor systems in
 //!   [`super::theme`] repaint the node when the theme preset changes.
 //! - **Runtime component values** (anything built by a call, e.g.
-//!   `BorderColor::all(..)`) are inserted with
-//!   [`template_value(..)`](template_value), which works for any `Clone + Default`
-//!   component. [`TextFont`] is the notable exception: it has a manual
-//!   `FromTemplate` (asset-templated font field), so patch `font_size` with field
-//!   syntax instead.
+//!   `BorderColor::all(..)`, or a local holding a component) are written as a
+//!   bare expression — `BorderColor::all(border)` or `cursor` — which works for
+//!   any `Clone + Default` component. [`TextFont`] is the notable exception: it
+//!   has a manual `FromTemplate` (asset-templated font field), so patch
+//!   `font_size` with field syntax instead.
 //! - **Behavior** is attached with [`on(..)`](on), which registers an entity
 //!   observer for an [`EntityEvent`] (e.g. `on(on_help_close)` for an
 //!   `On<Activate>` handler).
-//! - **Dynamic children** are a `Vec<impl Scene>` spliced into a `Children [..]`
-//!   list with `{...}`. A bare `Scene` is not a `SceneList`, so single scenes are
-//!   spliced as `{vec![scene]}`. Beware that scene helpers are generic: two calls
-//!   with different closure/string argument types return *different* `impl Scene`
-//!   types and cannot share one `Vec`.
+//! - **Scene references** (a scene held in a variable or returned by a function)
+//!   are prefixed with `@`: `@{modal_scrim_scene()}` splices that scene into the
+//!   current entity.
+//! - **Dynamic children** go in a `Children [..]` list with sibling entries
+//!   separated by `--`: a single scene held in a local is `@scene`, and a
+//!   `Vec<impl Scene>` (any `SceneList`) is spliced with `{list}`. Beware that
+//!   scene helpers are generic: two calls with different closure/string argument
+//!   types return *different* `impl Scene` types and cannot share one `Vec`.
 //!
 //! # What is *not* migrated
 //!
@@ -55,18 +58,18 @@ use bevy::ecs::system::IntoObserverSystem;
 use bevy::input_focus::tab_navigation::TabIndex;
 use bevy::prelude::*;
 use bevy::text::{EditableText, TextCursorStyle};
-use bevy_ui_widgets::{Activate, Button};
+use bevy_ui_widgets::{Activate, Button, TextInput};
 
 /// A single themed text line.
 pub fn text_line(theme: &Theme, content: impl Into<String>, role: Role, size: f32) -> impl Scene {
     let content = content.into();
     let color = theme.color(role);
     // `TextFont` has a manual `FromTemplate` (its `font` field is asset-templated),
-    // so it can't be passed to `template_value`; patch the size with field syntax.
+    // so it can't be written as a plain value; patch the size with field syntax.
     // A custom `Theme::font` isn't applied here — the default font is used, which
     // matches the app's default configuration.
     bsn! {
-        template_value(Text::new(content))
+        Text::new(content)
         TextFont { font_size: {size} }
         TextColor({color})
         ThemedText({role})
@@ -81,18 +84,19 @@ pub fn bound_text(
     size: f32,
     project: impl Fn() -> String + Send + Sync + 'static,
 ) -> impl Scene {
-    (
-        text_line(theme, "", role, size),
-        template_value(bind_text(project)),
-    )
+    let bound = bind_text(project);
+    bsn! {
+        @{text_line(theme, "", role, size)}
+        bound
+    }
 }
 
 /// A themed button with a centered text label whose `On<Activate>` is handled by
 /// `observer`.
-pub fn button<B: Bundle, M: 'static>(
+pub fn button<M: 'static>(
     theme: &Theme,
     label: impl Into<String>,
-    observer: impl IntoObserverSystem<Activate, B, M> + Clone + Sync,
+    observer: impl IntoObserverSystem<Activate, M> + Clone + Sync,
 ) -> impl Scene {
     let label = text_line(theme, label, Role::Text, theme.metrics.font_md);
     let surface = theme.color(Role::Surface);
@@ -102,7 +106,7 @@ pub fn button<B: Bundle, M: 'static>(
     bsn! {
         Button
         super::theme::ThemedButton
-        template_value(Interaction::default())
+        Interaction::default()
         Node {
             padding: {UiRect::axes(Val::Px(pad_x), Val::Px(pad_y))},
             align_items: AlignItems::Center,
@@ -110,10 +114,10 @@ pub fn button<B: Bundle, M: 'static>(
             border: {UiRect::all(Val::Px(1.0))},
         }
         BackgroundColor({surface})
-        template_value(BorderColor::all(border))
+        BorderColor::all(border)
         ThemedBorder({Role::Border})
         on(observer)
-        Children [ {vec![label]} ]
+        Children [ @label ]
     }
 }
 
@@ -132,9 +136,10 @@ pub fn text_input(theme: &Theme) -> impl Scene {
     };
     bsn! {
         WantsKeyboard
+        TextInput
         EditableText { allow_newlines: false }
-        template_value(TextLayout::no_wrap())
-        template_value(cursor)
+        TextLayout::no_wrap()
+        cursor
         TextFont { font_size: {font_size} }
         TextColor({text_color})
         ThemedText({Role::Text})
@@ -149,7 +154,7 @@ pub fn text_input(theme: &Theme) -> impl Scene {
         }
         BackgroundColor({surface})
         ThemedBg({Role::Surface})
-        template_value(BorderColor::all(border))
+        BorderColor::all(border)
         ThemedBorder({Role::Border})
     }
 }
@@ -209,24 +214,24 @@ pub fn help_modal_scene(theme: &Theme, shortcuts: &[&str]) -> impl Scene {
         BackgroundColor({scrim})
         GlobalZIndex({z::MODAL})
         Children [
-            (
-                Node {
-                    flex_direction: FlexDirection::Column,
-                    width: {Val::Px(360.0)},
-                    padding: {UiRect::all(Val::Px(16.0))},
-                    row_gap: {Val::Px(6.0)},
-                    border: {UiRect::all(Val::Px(1.0))},
-                }
-                BackgroundColor({panel})
-                ThemedBg({Role::Panel})
-                template_value(BorderColor::all(border))
-                ThemedBorder({Role::Border})
-                Children [
-                    {vec![heading]},
-                    {lines},
-                    {vec![close]},
-                ]
-            )
+            Node {
+                flex_direction: FlexDirection::Column,
+                width: {Val::Px(360.0)},
+                padding: {UiRect::all(Val::Px(16.0))},
+                row_gap: {Val::Px(6.0)},
+                border: {UiRect::all(Val::Px(1.0))},
+            }
+            BackgroundColor({panel})
+            ThemedBg({Role::Panel})
+            BorderColor::all(border)
+            ThemedBorder({Role::Border})
+            Children [
+                @heading
+                --
+                {lines}
+                --
+                @close
+            ]
         ]
     }
 }

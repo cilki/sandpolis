@@ -156,7 +156,7 @@ pub fn spawn_floating_panel(
 
 /// Record the panel's current top-left when a titlebar drag begins.
 fn on_titlebar_drag_start(
-    drag: On<Pointer<DragStart>>,
+    drag: On<PointerDragStart>,
     titlebars: Query<&PanelTitlebar>,
     mut panels: Query<(&Node, &mut PanelDragOrigin), With<FloatingPanel>>,
 ) {
@@ -172,7 +172,7 @@ fn on_titlebar_drag_start(
 
 /// Move the panel as the titlebar is dragged.
 fn on_titlebar_drag(
-    drag: On<Pointer<Drag>>,
+    drag: On<PointerDrag>,
     titlebars: Query<&PanelTitlebar>,
     mut panels: Query<(&mut Node, &PanelDragOrigin), With<FloatingPanel>>,
 ) {

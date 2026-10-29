@@ -176,7 +176,7 @@ impl NodePanel for ShellPanel {
 
         // Clicking the grid focuses it so keystrokes route to the terminal.
         ctx.commands.entity(grid).observe(
-            move |_: On<Pointer<Click>>, mut focus: ResMut<InputFocus>| {
+            move |_: On<PointerClick>, mut focus: ResMut<InputFocus>| {
                 focus.set(grid, FocusCause::Navigated);
             },
         );

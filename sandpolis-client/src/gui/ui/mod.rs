@@ -74,7 +74,7 @@ impl Plugin for UiPlugin {
         if !app.is_plugin_added::<bevy::input_focus::tab_navigation::TabNavigationPlugin>() {
             app.add_plugins(bevy::input_focus::tab_navigation::TabNavigationPlugin);
         }
-        if !app.is_plugin_added::<bevy_ui_widgets::EditableTextInputPlugin>() {
+        if !app.is_plugin_added::<bevy_ui_widgets::TextInputPlugin>() {
             app.add_plugins(bevy_ui_widgets::UiWidgetsPlugins);
         }
         app.add_plugins(theme::ThemePlugin)

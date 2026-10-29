@@ -57,7 +57,7 @@ fn preset_row(theme: &Theme, preset: ThemePreset) -> impl Scene {
     bsn! {
         ThemePresetRow { preset: {preset} }
         bevy_ui_widgets::Button
-        template_value(Interaction::default())
+        Interaction::default()
         Node {
             flex_direction: FlexDirection::Column,
             width: {Val::Percent(100.0)},
@@ -84,26 +84,26 @@ fn theme_picker_scene(theme: &Theme) -> impl Scene {
     let close = button(theme, "Close", on_theme_close);
 
     bsn! {
-        {modal_scrim_scene()}
+        @{modal_scrim_scene()}
         Children [
-            (
-                Node {
-                    flex_direction: FlexDirection::Column,
-                    width: {Val::Px(340.0)},
-                    padding: {UiRect::all(Val::Px(12.0))},
-                    row_gap: {Val::Px(8.0)},
-                    border: {UiRect::all(Val::Px(1.0))},
-                }
-                BackgroundColor({panel})
-                ThemedBg({Role::Panel})
-                template_value(BorderColor::all(border))
-                ThemedBorder({Role::Border})
-                Children [
-                    {vec![heading]},
-                    {rows},
-                    {vec![close]},
-                ]
-            )
+            Node {
+                flex_direction: FlexDirection::Column,
+                width: {Val::Px(340.0)},
+                padding: {UiRect::all(Val::Px(12.0))},
+                row_gap: {Val::Px(8.0)},
+                border: {UiRect::all(Val::Px(1.0))},
+            }
+            BackgroundColor({panel})
+            ThemedBg({Role::Panel})
+            BorderColor::all(border)
+            ThemedBorder({Role::Border})
+            Children [
+                @heading
+                --
+                {rows}
+                --
+                @close
+            ]
         ]
     }
 }

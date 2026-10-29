@@ -3,7 +3,9 @@
 //! This is intentionally thin: it only applies the app [`Theme`] (border,
 //! background, font, cursor colors) to a native [`EditableText`] node. Cursor
 //! movement, text selection, IME, and clipboard paste are all handled upstream by
-//! `bevy_ui_widgets::EditableTextInputPlugin` (installed via `UiWidgetsPlugins`).
+//! `bevy_ui_widgets::TextInputPlugin` (installed via `UiWidgetsPlugins`), whose
+//! observers only act on entities carrying the [`TextInput`] marker — so the
+//! bundle below always pairs it with the [`EditableText`] state.
 //!
 //! Features the native widget doesn't yet provide (placeholder text, password
 //! masking, submit events) are deliberately omitted — we'll adopt them from
@@ -21,6 +23,7 @@ use bevy::input_focus::tab_navigation::TabIndex;
 use bevy::input_focus::{FocusCause, InputFocus};
 use bevy::prelude::*;
 use bevy::text::{EditableText, TextCursorStyle};
+use bevy_ui_widgets::TextInput;
 
 /// Move [`InputFocus`] to a text field when it's clicked.
 ///
@@ -34,7 +37,7 @@ use bevy::text::{EditableText, TextCursorStyle};
 /// Registered as a global observer by [`super::UiPlugin`], so every
 /// [`text_input`] gets this without opting in.
 pub fn focus_text_input_on_click(
-    click: On<Pointer<Click>>,
+    click: On<PointerClick>,
     fields: Query<(), With<EditableText>>,
     mut focus: ResMut<InputFocus>,
 ) {
@@ -50,6 +53,7 @@ pub fn text_input(theme: &Theme) -> impl Bundle {
         // Lets the input gating ([`UiPointerState::wants_keyboard`]) suppress world
         // hotkeys while this field is focused.
         WantsKeyboard,
+        TextInput,
         EditableText {
             allow_newlines: false,
             ..default()

@@ -485,15 +485,17 @@ fn on_deploy_close(_: On<Activate>, mut state: ResMut<DeployDialogState>) {
 fn start_deploy(
     state: &mut DeployDialogState,
 ) -> anyhow::Result<(UnboundedReceiver<DeployStreamResponse>, DeployStream)> {
-    use anyhow::{Context, bail};
+    // Bevy 0.20's prelude brings its own `ContextExt` with the same method
+    // names, so anyhow's are called through the trait path below.
+    use anyhow::bail;
 
     let password = state.password.trim().to_string();
     let port = match state.port.trim() {
         "" => None,
         given => Some(
-            given
-                .parse()
-                .with_context(|| format!("{given:?} is not a port number"))?,
+            anyhow::Context::with_context(given.parse(), || {
+                format!("{given:?} is not a port number")
+            })?,
         ),
     };
 
@@ -510,10 +512,14 @@ fn start_deploy(
     )?;
     let auth = deploy_form::read_auth(resolved.key_path.as_deref(), &password)?;
 
-    let connection =
-        sandpolis_client::sync::connection().context("Not connected to a server yet")?;
-    let server = sandpolis_client::sync::primary_server_url()
-        .context("The server connection has no URL yet")?;
+    let connection = anyhow::Context::context(
+        sandpolis_client::sync::connection(),
+        "Not connected to a server yet",
+    )?;
+    let server = anyhow::Context::context(
+        sandpolis_client::sync::primary_server_url(),
+        "The server connection has no URL yet",
+    )?;
 
     let (requester, events) = DeployStreamRequester::channel();
     let request = DeployStreamRequest::Start {
