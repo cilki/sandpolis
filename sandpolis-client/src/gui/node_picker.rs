@@ -8,6 +8,7 @@ use crate::gui::ui::text_input::text_input;
 use crate::gui::ui::theme::{Role, Theme, ThemedBg, ThemedBorder};
 use crate::gui::ui::widgets::{heading, muted, text};
 use bevy::input_focus::{FocusCause, InputFocus};
+use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::text::EditableText;
 use bevy_ui_widgets::{Activate, Button};
@@ -196,7 +197,7 @@ pub fn rebuild_node_rows(
                         node_entity: entity,
                     },
                     Button,
-                    Interaction::default(),
+                    Hovered::default(),
                     Node {
                         width: Val::Percent(100.0),
                         padding: UiRect::axes(Val::Px(8.0), Val::Px(6.0)),

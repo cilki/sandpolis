@@ -1,16 +1,17 @@
 //! Hover tooltips for `bevy_ui` nodes.
 //!
-//! Attach a [`Tooltip`] to any hoverable widget (anything with an
-//! [`Interaction`]); while it is hovered, a single transient popup follows the
+//! Attach a [`Tooltip`] to any hoverable widget (anything with a
+//! [`Hovered`]); while it is hovered, a single transient popup follows the
 //! cursor showing the tooltip's text. There is at most one popup at a time.
 //!
-//! World-space hovers have no `Interaction` to hang a [`Tooltip`] on, so they
+//! World-space hovers have no `Hovered` to hang a [`Tooltip`] on, so they
 //! drive the same popup through the [`WorldTooltip`] resource instead.
 
 use super::theme::{Role, Theme, ThemedBg, ThemedBorder};
 use super::widgets::text;
 use super::z;
 use bevy::picking::Pickable;
+use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 
 /// Installs the tooltip popup system.
@@ -54,7 +55,7 @@ pub fn manage_tooltip(
     mut commands: Commands,
     theme: Res<Theme>,
     windows: Query<&Window>,
-    hovered: Query<(&Interaction, &Tooltip)>,
+    hovered: Query<(&Hovered, &Tooltip)>,
     world: Res<WorldTooltip>,
     popup: Query<Entity, With<TooltipPopup>>,
     mut popup_node: Query<&mut Node, With<TooltipPopup>>,
@@ -62,9 +63,7 @@ pub fn manage_tooltip(
 ) {
     let target = hovered
         .iter()
-        .find_map(|(interaction, tooltip)| {
-            matches!(interaction, Interaction::Hovered).then(|| tooltip.text.clone())
-        })
+        .find_map(|(hovered, tooltip)| hovered.get().then(|| tooltip.text.clone()))
         .or_else(|| world.0.clone());
 
     let Some(label) = target else {

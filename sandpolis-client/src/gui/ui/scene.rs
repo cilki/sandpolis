@@ -56,6 +56,7 @@ use super::z;
 use crate::gui::input::on_help_close;
 use bevy::ecs::system::IntoObserverSystem;
 use bevy::input_focus::tab_navigation::TabIndex;
+use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::text::{EditableText, TextCursorStyle};
 use bevy_ui_widgets::{Activate, Button, TextInput};
@@ -106,7 +107,7 @@ pub fn button<M: 'static>(
     bsn! {
         Button
         super::theme::ThemedButton
-        Interaction::default()
+        Hovered::default()
         Node {
             padding: {UiRect::axes(Val::Px(pad_x), Val::Px(pad_y))},
             align_items: AlignItems::Center,

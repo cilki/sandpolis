@@ -130,7 +130,6 @@ impl NodePanel for DesktopPanel {
                     color: Color::NONE,
                     ..default()
                 },
-                Interaction::default(),
                 RelativeCursorPosition::default(),
             ));
 

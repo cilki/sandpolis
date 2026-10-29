@@ -31,6 +31,7 @@ use crate::gui::ui::widgets::text;
 use crate::gui::ui::z;
 use bevy::image::Image;
 use bevy::picking::Pickable;
+use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use bevy_ui_widgets::Button;
@@ -793,7 +794,7 @@ fn header_button(theme: &Theme, label: &str) -> impl Bundle {
     (
         Button,
         ThemedButton,
-        Interaction::default(),
+        Hovered::default(),
         Node {
             padding: UiRect::axes(
                 Val::Px(theme.metrics.space_sm),

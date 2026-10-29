@@ -9,6 +9,7 @@ use super::gating::{BlocksWorldInput, ModalRoot};
 use super::theme::{Role, Theme, ThemedBg, ThemedBorder};
 use super::widgets::text;
 use super::z;
+use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy_ui_widgets::{Activate, Button};
 
@@ -123,7 +124,7 @@ pub fn spawn_floating_panel(
         bar.spawn(text(theme, title, theme.metrics.font_md, Role::Text));
         bar.spawn((
             Button,
-            Interaction::default(),
+            Hovered::default(),
             Node {
                 padding: UiRect::axes(Val::Px(theme.metrics.space_sm), Val::Px(0.0)),
                 ..default()

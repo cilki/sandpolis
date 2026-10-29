@@ -11,10 +11,12 @@ use crate::gui::layer_picker::LayerPickerState;
 use crate::gui::layer_toolbar::LayerToolbarRoot;
 use crate::gui::ui::gating::BlocksWorldInput;
 use crate::gui::ui::icon::IconCache;
-use crate::gui::ui::theme::{Role, Theme};
+use crate::gui::ui::theme::{Role, Theme, button_surface};
 use crate::gui::ui::z;
 use bevy::image::Image;
+use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
+use bevy::ui::Pressed;
 use bevy_ui_widgets::{Activate, Button};
 use sandpolis_instance::LayerName;
 
@@ -123,7 +125,7 @@ pub fn spawn_layer_indicator(
                 .spawn((
                     LayerIndicator,
                     Button,
-                    Interaction::default(),
+                    Hovered::default(),
                     BlocksWorldInput,
                     Node {
                         width: Val::Px(200.0),
@@ -171,7 +173,7 @@ pub fn update_layer_indicator(
     mut state: ResMut<LayerIndicatorState>,
     mut images: ResMut<Assets<Image>>,
     mut icon_cache: ResMut<IconCache>,
-    mut root: Query<(&Interaction, &mut BackgroundColor), With<LayerIndicator>>,
+    mut root: Query<(&Hovered, Has<Pressed>, &mut BackgroundColor), With<LayerIndicator>>,
     mut label: Query<(&mut Text, &mut TextColor), With<LayerIndicatorLabel>>,
     mut icon: Query<&mut ImageNode, With<LayerIndicatorIcon>>,
 ) {
@@ -192,12 +194,8 @@ pub fn update_layer_indicator(
     // Fade in over FADE_IN_SECS, then stay fully visible.
     let alpha = (state.show_timer.elapsed_secs() / FADE_IN_SECS).clamp(0.0, 1.0);
 
-    if let Ok((interaction, mut bg)) = root.single_mut() {
-        let surface = match *interaction {
-            Interaction::Pressed => theme.color(Role::SurfaceActive),
-            Interaction::Hovered => theme.color(Role::SurfaceHover),
-            Interaction::None => theme.color(Role::Surface),
-        };
+    if let Ok((hovered, pressed, mut bg)) = root.single_mut() {
+        let surface = theme.color(button_surface(hovered.get(), pressed));
         bg.0 = surface.with_alpha(alpha);
     }
     if let Ok((_, mut color)) = label.single_mut() {

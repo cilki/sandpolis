@@ -8,6 +8,7 @@
 //! list view) are added in later migration phases as their consumers arrive.
 
 use super::theme::{Role, Theme, ThemedBorder, ThemedButton, ThemedText};
+use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy_ui_widgets::Button;
 
@@ -92,7 +93,7 @@ pub fn button(theme: &Theme, label: impl Into<String>) -> impl Bundle {
     (
         Button,
         ThemedButton,
-        Interaction::default(),
+        Hovered::default(),
         Node {
             padding: UiRect::axes(
                 Val::Px(theme.metrics.space_md),
@@ -121,7 +122,7 @@ pub fn icon_button(theme: &Theme, icon: Handle<Image>) -> impl Bundle {
     (
         Button,
         ThemedButton,
-        Interaction::default(),
+        Hovered::default(),
         Node {
             width: Val::Px(BUTTON_PX),
             height: Val::Px(BUTTON_PX),

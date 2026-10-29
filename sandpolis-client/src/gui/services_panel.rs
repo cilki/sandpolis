@@ -17,6 +17,7 @@ use crate::gui::ui::theme::{Role, Theme, ThemedBorder, ThemedButton};
 use crate::gui::ui::widgets::{row, text};
 use crate::service;
 use bevy::ecs::world::CommandQueue;
+use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy_ui_widgets::Button;
 use chrono::Utc;
@@ -150,7 +151,7 @@ fn blank_button(theme: &Theme) -> impl Bundle {
     (
         Button,
         ThemedButton,
-        Interaction::default(),
+        Hovered::default(),
         Node {
             padding: UiRect::axes(
                 Val::Px(theme.metrics.space_md),

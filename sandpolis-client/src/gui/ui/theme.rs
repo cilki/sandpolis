@@ -10,7 +10,9 @@
 //! it whenever the theme changes. Buttons use [`ThemedButton`] instead, which also
 //! reflects pointer interaction (hover / pressed).
 
+use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
+use bevy::ui::Pressed;
 
 /// Semantic color roles. Widgets reference roles, not raw colors, so a theme swap
 /// recolors everything consistently.
@@ -264,9 +266,21 @@ pub struct ThemedText(pub Role);
 pub struct ThemedBorder(pub Role);
 
 /// Marks an interactive button whose background reflects the surface palette and
-/// the current [`Interaction`] state.
+/// the current [`Hovered`] / [`Pressed`] state.
 #[derive(Component, Clone, Copy, Default)]
 pub struct ThemedButton;
+
+/// The surface [`Role`] an interactive control shows for its pointer state:
+/// pressed wins over hovered, which wins over rest.
+pub fn button_surface(hovered: bool, pressed: bool) -> Role {
+    if pressed {
+        Role::SurfaceActive
+    } else if hovered {
+        Role::SurfaceHover
+    } else {
+        Role::Surface
+    }
+}
 
 /// Installs the theme resource and recolor systems.
 pub struct ThemePlugin;
@@ -311,21 +325,20 @@ fn apply_border(theme: Res<Theme>, mut query: Query<(Ref<ThemedBorder>, &mut Bor
     }
 }
 
-/// Update [`ThemedButton`] backgrounds based on interaction state. Runs on spawn,
-/// when interaction changes, and when the theme changes.
+/// Update [`ThemedButton`] backgrounds from their pointer state.
+///
+/// `Pressed` is a marker that `bevy_ui_widgets`' button plugin inserts and
+/// removes, so there is no single component whose change ticks cover every
+/// transition (a release is only visible through `RemovedComponents`). Rather
+/// than pairing a change filter with a removal watcher, the wanted color is
+/// recomputed each frame and written only when it differs, which is what keeps
+/// the retained UI renderer from seeing a spurious change.
 fn apply_button_visuals(
     theme: Res<Theme>,
-    mut query: Query<(Ref<Interaction>, &mut BackgroundColor), With<ThemedButton>>,
+    mut query: Query<(&Hovered, Has<Pressed>, &mut BackgroundColor), With<ThemedButton>>,
 ) {
-    let theme_changed = theme.is_changed();
-    for (interaction, mut bg) in &mut query {
-        if !(theme_changed || interaction.is_changed()) {
-            continue;
-        }
-        bg.0 = match *interaction {
-            Interaction::Pressed => theme.color(Role::SurfaceActive),
-            Interaction::Hovered => theme.color(Role::SurfaceHover),
-            Interaction::None => theme.color(Role::Surface),
-        };
+    for (hovered, pressed, mut bg) in &mut query {
+        let color = theme.color(button_surface(hovered.get(), pressed));
+        bg.set_if_neq(BackgroundColor(color));
     }
 }

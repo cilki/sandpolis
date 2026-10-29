@@ -161,7 +161,6 @@ impl NodePanel for ShellPanel {
                 TerminalPendingStart,
                 WantsKeyboard,
                 TabIndex(0),
-                Interaction::default(),
                 Node {
                     flex_direction: FlexDirection::Column,
                     flex_grow: 1.0,

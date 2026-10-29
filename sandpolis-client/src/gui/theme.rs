@@ -3,6 +3,7 @@
 //! The actual palette/metrics live in [`crate::gui::ui::theme`]; this module is
 //! just the `T`-toggled modal that lets the user switch presets at runtime.
 
+use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 
 use crate::gui::ui::gating::{BlocksWorldInput, ModalRoot, UiPointerState};
@@ -57,7 +58,7 @@ fn preset_row(theme: &Theme, preset: ThemePreset) -> impl Scene {
     bsn! {
         ThemePresetRow { preset: {preset} }
         bevy_ui_widgets::Button
-        Interaction::default()
+        Hovered::default()
         Node {
             flex_direction: FlexDirection::Column,
             width: {Val::Percent(100.0)},
