@@ -12,9 +12,6 @@ in mkShell rec {
 
   LD_LIBRARY_PATH = lib.makeLibraryPath buildInputs;
   LIBCLANG_PATH = "${libclang.lib}/lib";
-  # libwebm (pulled in by rustdesk's scrap via rust-webm) predates the
-  # stricter modern g++ and uses fixed-width ints without <cstdint>.
-  CXXFLAGS = "-include cstdint";
   # rustdesk's scrap and v4l2-sys run bindgen, whose libclang cannot find the
   # glibc / gcc / kernel headers by default under nix. Feed it the cc-wrapper's
   # own cflags plus the clang resource dir and kernel uapi headers.
