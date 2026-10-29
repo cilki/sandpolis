@@ -5,7 +5,7 @@ edition = "2024"
 license = "Unlicense"
 name = "sandpolis"
 repository = "https://github.com/fossable/sandpolis"
-rust-version = "1.96"
+rust-version = "1.97.1"
 version = "8.0.0"
 
 [build-dependencies]
