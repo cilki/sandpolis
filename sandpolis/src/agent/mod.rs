@@ -62,6 +62,19 @@ pub async fn start(args: crate::cli::AgentArgs) -> Result<std::process::ExitCode
         endpoint_certs.push(cert);
     }
 
+    // The realm cert is the only thing that tells an agent where its server
+    // is, and nothing supplies one later, so without it the agent would sit
+    // idle forever looking like it runs. A boot agent still has its
+    // chainloader UI to show, so only the regular agent refuses to start.
+    #[cfg(not(feature = "uki"))]
+    if options.server.is_none() {
+        anyhow::bail!(
+            "No realm cert to attach with: pass --realm <PATH> (or set $S7S_REALM). \
+             A server writes one per realm to <realm>.realm.pem in its --data \
+             directory, or to /tmp/default.realm.pem when it has none"
+        );
+    }
+
     let state = crate::endpoint_state(&options, endpoint_certs).await?;
 
     // A UKI build is always a boot agent: the fullscreen chainloader UI takes
