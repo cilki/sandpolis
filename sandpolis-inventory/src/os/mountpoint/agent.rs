@@ -23,7 +23,7 @@ pub struct MountpointCollector {
 impl MountpointCollector {
     pub fn new(db: RealmDatabase, instance_id: InstanceId) -> Result<Self> {
         Ok(Self {
-            disks: Disks::new(),
+            disks: Disks::new()?,
             data: db.resident_vec(DataCondition::equal(
                 MountpointDataKey::_instance_id,
                 instance_id,
@@ -36,11 +36,11 @@ impl MountpointCollector {
 impl Collector for MountpointCollector {
     async fn refresh(&mut self) -> Result<()> {
         self.disks.refresh(true);
-        trace!(mounts = self.disks.list().len(), "Polled mountpoints");
+        trace!(mounts = self.disks.len(), "Polled mountpoints");
 
         let mut live: Vec<String> = Vec::new();
 
-        'next_disk: for disk in self.disks.list() {
+        'next_disk: for disk in &self.disks {
             let path = disk.mount_point().to_string_lossy().to_string();
             let device = disk.name().to_string_lossy().to_string();
             let kind = disk.file_system().to_string_lossy().to_string();

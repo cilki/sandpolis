@@ -137,9 +137,8 @@ mod agent {
     /// whose mount point is the longest prefix of the (canonicalized) path.
     fn statfs(path: &std::path::Path) -> Result<FsUsage> {
         let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        let disks = sysinfo::Disks::new_with_refreshed_list();
+        let disks = sysinfo::Disks::new_with_refreshed_list()?;
         let disk = disks
-            .list()
             .iter()
             .filter(|disk| path.starts_with(disk.mount_point()))
             .max_by_key(|disk| disk.mount_point().as_os_str().len())

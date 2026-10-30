@@ -20,15 +20,15 @@ vnc = { version = "0.4", optional = true }
 # never exchange types. The tls crate's `rustls` feature resolves to aws-lc-rs,
 # the same provider the rest of the tree uses. These crates release in lockstep,
 # so bump them together.
-ironrdp-connector = { version = "0.11", optional = true }
-ironrdp-session = { version = "0.12", optional = true }
-ironrdp-graphics = { version = "0.10", optional = true }
-ironrdp-pdu = { version = "0.10", optional = true }
-ironrdp-svc = { version = "0.9", optional = true }
+ironrdp-connector = { version = "0.12", optional = true }
+ironrdp-session = { version = "0.13", optional = true }
+ironrdp-graphics = { version = "0.11", optional = true }
+ironrdp-pdu = { version = "0.11", optional = true }
+ironrdp-svc = { version = "0.10", optional = true }
 ironrdp-core = { version = "0.3", optional = true }
-ironrdp-input = { version = "0.8", optional = true }
-ironrdp-async = { version = "0.11", optional = true }
-ironrdp-tokio = { version = "0.11", features = ["reqwest"], optional = true }
+ironrdp-input = { version = "0.9", optional = true }
+ironrdp-async = { version = "0.12", optional = true }
+ironrdp-tokio = { version = "0.12", features = ["reqwest"], optional = true }
 ironrdp-tls = { version = "0.3", features = ["rustls"], optional = true }
 tokio-util = { workspace = true, optional = true }
 native_db = { workspace = true }
@@ -41,7 +41,7 @@ sandpolis-agent = { path = "../sandpolis-agent", version = "0.0.1", optional = t
 tokio = { workspace = true, optional = true }
 zstd = { version = "0.14", optional = true }
 image = { workspace = true, optional = true }
-lazy_static = { version = "1.4", optional = true }
+lazy_static = { version = "1.5", optional = true }
 cfg-if = { version = "1.0", optional = true }
 serde_json = { workspace = true, optional = true }
 
@@ -74,7 +74,7 @@ libc = { version = "0.2", optional = true }
 block = { version = "0.1", optional = true }
 core-graphics = { version = "0.25", optional = true }
 objc = { version = "0.2", optional = true }
-unicode-segmentation = { version = "1.10", optional = true }
+unicode-segmentation = { version = "1.13", optional = true }
 
 # Screen-capture / input backend for DXGI (Windows).
 [target.'cfg(target_os = "windows")'.dependencies.winapi]

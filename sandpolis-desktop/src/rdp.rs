@@ -158,6 +158,13 @@ mod server {
                 height: 720,
             },
             desktop_scale_factor: 0,
+            // Zero/derived/100 on the wire, the same Client Core Data the
+            // connector sent before these were configurable.
+            desktop_physical_size: None,
+            desktop_orientation: None,
+            device_scale_factor: None,
+            // Absolute pointer positions are all the desktop session sends.
+            relative_mouse_input: false,
             // TLS security, not NLA — see the module header.
             enable_tls: true,
             enable_credssp: false,
@@ -200,6 +207,7 @@ mod server {
             multitransport_flags: None,
             // A single monitor at `desktop_size`.
             monitor_layout: None,
+            monitor_extended_layout: None,
             // Legacy RC4 "Standard RDP Security" stays off: TLS or nothing.
             enable_standard_rdp_security: false,
             connection_type: ConnectionType::Lan,

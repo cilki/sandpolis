@@ -15,7 +15,7 @@ pub struct UserCollector {
 impl UserCollector {
     pub fn new(db: RealmDatabase, instance_id: InstanceId) -> Result<Self> {
         Ok(Self {
-            users: Users::new(),
+            users: Users::new()?,
             data: db.resident_vec(DataCondition::equal(UserDataKey::_instance_id, instance_id))?,
             instance_id,
         })
@@ -28,7 +28,7 @@ impl Collector for UserCollector {
         trace!(info = ?self.users, "Polled user info");
 
         // Update or add any new users
-        'next_user: for user in self.users.list() {
+        'next_user: for user in &self.users {
             for resident_user in self.data.iter() {
                 if resident_user.read().uid == **user.id() {
                     resident_user.update(|u| {
@@ -44,7 +44,7 @@ impl Collector for UserCollector {
         }
 
         // Remove residents whose uid is no longer present on the system.
-        let live_uids: Vec<u32> = self.users.list().iter().map(|u| **u.id()).collect();
+        let live_uids: Vec<u32> = self.users.iter().map(|u| **u.id()).collect();
         let stale: Vec<_> = self
             .data
             .iter()

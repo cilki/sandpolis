@@ -23,7 +23,7 @@ impl CpuCollector {
         Ok(Self {
             system: System::new_with_specifics(
                 RefreshKind::nothing().with_cpu(CpuRefreshKind::everything()),
-            ),
+            )?,
             cpu: db.resident_with(
                 DataCondition::equal(CpuDataKey::_instance_id, instance_id),
                 || CpuData::scoped(instance_id),
@@ -57,9 +57,9 @@ impl Collector for CpuCollector {
 
         'next_core: for (index, cpu) in self.system.cpus().iter().enumerate() {
             let index = index as u32;
-            // `cpu_usage` is a percentage; the model stores a 0.0..=1.0 fraction
+            // `usage` is a percentage; the model stores a 0.0..=1.0 fraction
             // so a gauge can use it without knowing where it came from.
-            let usage = (cpu.cpu_usage() as f64 / 100.0).clamp(0.0, 1.0);
+            let usage = (cpu.usage() as f64 / 100.0).clamp(0.0, 1.0);
             // sysinfo reports MHz.
             let frequency = cpu.frequency().saturating_mul(1_000_000);
 

@@ -34,7 +34,7 @@ members = [
 
 [workspace.dependencies]
 anyhow = "1.0.104"
-aws-lc-rs = "1.18.2"
+aws-lc-rs = "1.19.0"
 axum-extra = { version = "0.12.6", features = ["typed-header"] }
 axum-macros = "0.5.1"
 axum-server = { version = "0.8.0", features = ["tls-rustls"] }
@@ -63,7 +63,7 @@ pty-process = { version = "0.5.4", features = ["async"] }
 png = "0.18.1"
 rand = "0.10.3"
 regex = "1.13.1"
-ron = "0.12.2"
+ron = "0.12.3"
 russh = { version = "0.65.0" }
 rustls = { version = "0.23.46", default-features = false, features = [
   "aws_lc_rs",
@@ -104,7 +104,7 @@ uuid = { version = "1.29.0", features = ["v7", "serde", "rng-getrandom"] }
 validator = { version = "0.21", features = ["derive"] }
 inventory = "0.3"
 # `proxy` became its own feature in zbus 6; the systemd collector derives one.
-zbus = { version = "6.1.0", default-features = false, features = [
+zbus = { version = "6.2.0", default-features = false, features = [
   "tokio",
   "proxy",
 ] }

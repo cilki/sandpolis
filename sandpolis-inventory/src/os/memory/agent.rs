@@ -18,7 +18,7 @@ impl MemoryMonitor {
         Ok(Self {
             system: System::new_with_specifics(
                 RefreshKind::nothing().with_memory(MemoryRefreshKind::everything()),
-            ),
+            )?,
             data: db.resident_with(
                 DataCondition::equal(MemoryDataKey::_instance_id, instance_id),
                 || MemoryData::scoped(instance_id),
