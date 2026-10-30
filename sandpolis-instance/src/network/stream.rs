@@ -890,13 +890,10 @@ impl StreamPermission {
 
 inventory::collect!(StreamPermission);
 
-// Sync subscriptions and pings are how a client is a client at all, so they are
-// open to every authenticated connection.
+// Sync subscriptions are how a client is a client at all, so they are open to
+// every authenticated connection.
 inventory::submit! {
     StreamPermission::open(sandpolis_macros::stream_tag!(Sync))
-}
-inventory::submit! {
-    StreamPermission::open(sandpolis_macros::stream_tag!(PingStream))
 }
 
 #[cfg(test)]

@@ -287,7 +287,7 @@ cd android && ./gradlew assembleDebug
   Real NAT traversal needs a networking foundation that doesn't exist yet — a
   UDP transport, a DTLS `InstanceConnection` (the third transport its doc
   comment anticipates), and a STUN/TURN-style rendezvous (sketched in
-  `direct::Rendezvous`, reworked from the long-dead `network::messages`).
+  `direct::Rendezvous`).
 - **Config hot-reload.** Tunnels are applied at server startup; the realm-config
   watcher does not yet re-orchestrate on edits (stop removed / start added).
 - **UDP session expiry.** UDP sessions live for the tunnel's lifetime rather
