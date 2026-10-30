@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 /// peer's observed public address and a shared key, plus a clock so the server
 /// can forecast a synchronized punch time.
 ///
-/// Reworked from the long-dead `network::messages` sketch; not yet exchanged.
+/// Not yet exchanged.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Rendezvous {
     /// The peer to punch toward.

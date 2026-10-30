@@ -39,8 +39,6 @@ pub fn collected_responders() -> impl Iterator<Item = &'static dyn RegisterRespo
 #[cfg(any(feature = "agent", feature = "client", feature = "server"))]
 pub mod datagram;
 pub mod liveness;
-pub mod messages;
-pub mod ping;
 pub mod reachability;
 #[cfg(any(feature = "agent", feature = "client", feature = "server"))]
 pub mod socket;
