@@ -160,24 +160,22 @@ impl ServerManager {
         // with one supplied via a realm cert.
         let cert = self.realms.find_endpoint_cert(url.realm.clone())?;
 
-        let client_builder = || -> Result<reqwest::Client> {
-            // Only the realm CA may vouch for a server, so skip the platform
-            // trust store entirely — merging with it would also need
-            // rustls-platform-verifier, which can't take extra roots on Android.
-            Ok(ClientBuilder::new()
-                .tls_certs_only([cert.root_certificate()?])
-                .identity(cert.identity()?)
-                .resolve_to_addrs(
-                    &format!("{}.{}", cert.cluster_id()?, cert.name),
-                    &url.resolve()?,
-                )
-                .build()?)
-        };
+        // Only the realm CA may vouch for a server, so skip the platform trust
+        // store entirely — merging with it would also need
+        // rustls-platform-verifier, which can't take extra roots on Android.
+        let client = ClientBuilder::new()
+            .tls_certs_only([cert.root_certificate()?])
+            .identity(cert.identity()?)
+            .resolve_to_addrs(
+                &format!("{}.{}", cert.cluster_id()?, cert.name),
+                &url.resolve()?,
+            )
+            .build()?;
 
         Ok(ServerConnection {
             inner: Arc::new(RwLock::new(None)),
             runtime: self.runtime.clone(),
-            client: Arc::new(tokio::sync::RwLock::new(Some(client_builder()?))),
+            client,
             dialer: webtransport::Dialer::new(&cert, &url)?,
             cancel: CancellationToken::new(),
             banner: ServerBanner::default(),
@@ -269,7 +267,8 @@ impl Validate for ServerBanner {
 #[derive(Clone)]
 pub struct ServerConnection {
     /// For one-off requests (login, banner, enrollment), over HTTPS.
-    client: Arc<tokio::sync::RwLock<Option<reqwest::Client>>>,
+    /// Cheap to clone: `reqwest` shares the pool between clones.
+    client: reqwest::Client,
 
     /// For the session that carries streams and sync, over WebTransport.
     #[cfg(any(feature = "agent", feature = "client", feature = "server"))]
@@ -466,15 +465,8 @@ impl ServerConnection {
         // connections on demand independently of the long-lived session (see
         // `open_session`).
         debug!(endpoint = %endpoint, "Sending request");
-        let client = self
+        let request = self
             .client
-            .read()
-            .await
-            .as_ref()
-            .ok_or_else(|| anyhow!("connection has no http client"))?
-            .clone();
-
-        let request = client
             .request(
                 method,
                 format!("https://{}.{}/{endpoint}", self.cluster_id, self.realm),

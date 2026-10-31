@@ -8,7 +8,6 @@ use chrono::{DateTime, Utc};
 use native_db::ToKey;
 use native_model::Model;
 use sandpolis_macros::data;
-use serde::{Deserialize, Serialize};
 use serde_with::chrono::serde::{ts_seconds, ts_seconds_option};
 use std::sync::RwLock;
 use std::{cmp::min, net::SocketAddr, sync::Arc, time::Duration};
@@ -367,73 +366,37 @@ impl InstanceConnection {
     }
 }
 
-/// How long to wait to retry after an unsuccessful connection attempt.
-#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
-pub enum RetryWait {
-    /// An exponentially increasing wait
-    Exponential {
-        /// Initial wait value
-        initial: Duration,
+/// An exponentially increasing wait between attempts at something that keeps
+/// failing, like reaching a server.
+#[derive(Clone, Debug)]
+pub struct RetryWait {
+    /// Initial wait value
+    pub initial: Duration,
 
-        /// Number of retries required for the total wait to
-        /// increase by a factor of the initial value.
-        constant: f64,
+    /// Number of retries required for the total wait to increase by a factor
+    /// of the initial value.
+    pub constant: f64,
 
-        /// Maximum wait value
-        limit: Option<Duration>,
+    /// Maximum wait value
+    pub limit: Option<Duration>,
 
-        /// Number of times waited
-        iteration: u32,
-    },
-
-    /// A wait period that never changes
-    Constant {
-        /// Initial wait value
-        initial: Duration,
-
-        /// Number of times waited
-        iteration: u32,
-    },
+    /// Number of times waited
+    pub iteration: u32,
 }
 
 impl Iterator for RetryWait {
     type Item = Duration;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            RetryWait::Exponential {
-                initial,
-                constant,
-                limit,
-                iteration,
-            } => {
-                let value = Duration::from_millis(
-                    ((initial.as_millis() as f64)
-                        * (initial.as_millis() as f64).powf(*iteration as f64 / *constant))
-                        as u64,
-                );
+        let initial = self.initial.as_millis() as f64;
+        let value = Duration::from_millis(
+            (initial * initial.powf(self.iteration as f64 / self.constant)) as u64,
+        );
+        self.iteration += 1;
 
-                *iteration += 1;
-
-                Some(match limit {
-                    // Apply maximum limit
-                    Some(l) => min(value, *l),
-                    None => value,
-                })
-            }
-            RetryWait::Constant { initial, iteration } => {
-                *iteration += 1;
-                Some(*initial)
-            }
-        }
-    }
-}
-
-impl Default for RetryWait {
-    fn default() -> Self {
-        Self::Constant {
-            initial: Duration::from_millis(4000),
-            iteration: 0,
-        }
+        Some(match self.limit {
+            Some(limit) => min(value, limit),
+            None => value,
+        })
     }
 }

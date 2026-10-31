@@ -26,7 +26,7 @@ const STABLE_AFTER: Duration = Duration::from_secs(30);
 /// usually back within seconds, and caps out so a long outage doesn't turn into
 /// a busy loop against a server that is likely already struggling.
 fn server_retry() -> RetryWait {
-    RetryWait::Exponential {
+    RetryWait {
         initial: Duration::from_secs(1),
         constant: 20.0,
         limit: Some(Duration::from_secs(60)),

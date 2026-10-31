@@ -46,7 +46,7 @@ const STABLE_AFTER: Duration = Duration::from_secs(30);
 /// is back in seconds) and caps out so a long outage doesn't turn into a busy
 /// loop against it.
 fn upstream_retry() -> RetryWait {
-    RetryWait::Exponential {
+    RetryWait {
         initial: Duration::from_secs(1),
         constant: 20.0,
         limit: Some(Duration::from_secs(60)),

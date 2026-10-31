@@ -1,4 +1,3 @@
-use crate::network::RetryWait;
 use crate::realm::RealmName;
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
@@ -23,7 +22,6 @@ pub struct ServerUrl {
     pub host: String,
     pub port: u16,
     pub realm: RealmName,
-    pub retry: RetryWait,
 }
 
 impl ServerUrl {
@@ -56,8 +54,8 @@ impl ServerUrl {
     /// host, port, and realm so a loaded endpoint certificate names exactly one
     /// server without any ambient defaults.
     ///
-    /// Unlike [`Display`], this omits the scheme and the retry parameters (which
-    /// are a client-side connection policy, not part of the server's identity).
+    /// Unlike [`Display`], this never omits a default port or realm, and has no
+    /// scheme.
     ///
     // TODO X.509 ub-common-name caps a common name at 64 characters, so a long
     // host plus a long realm name can't be encoded. Move the identity into a SAN
@@ -77,9 +75,6 @@ impl FromStr for ServerUrl {
             format!("https://{s}")
         })?;
 
-        // TODO
-        url.query_pairs();
-
         let host = url
             .host_str()
             .ok_or_else(|| anyhow!("Invalid host in URL"))?;
@@ -97,8 +92,6 @@ impl FromStr for ServerUrl {
             } else {
                 RealmName::default()
             },
-            // TODO
-            retry: RetryWait::default(),
         })
     }
 }
@@ -116,30 +109,6 @@ impl Display for ServerUrl {
         if self.realm != RealmName::default() {
             f.write_str("/")?;
             f.write_str(&self.realm.to_string())?;
-        }
-
-        if self.retry != RetryWait::default() {
-            match self.retry {
-                RetryWait::Exponential {
-                    initial,
-                    constant,
-                    limit,
-                    iteration: _,
-                } => {
-                    f.write_str(&format!(
-                        "?type=exponential&initial={}&constant={}",
-                        initial.as_millis(),
-                        constant,
-                    ))?;
-                    if let Some(l) = limit {
-                        f.write_str(&format!("&limit={}", l.as_millis(),))?;
-                    }
-                }
-                RetryWait::Constant {
-                    initial,
-                    iteration: _,
-                } => f.write_str(&format!("?type=constant&initial={}", initial.as_millis()))?,
-            }
         }
         Ok(())
     }
@@ -203,7 +172,6 @@ mod tests {
             host: "example.com".to_string(),
             port: 8768,
             realm: RealmName::default(),
-            retry: RetryWait::default(),
         };
         assert_eq!(url.to_string(), "https://example.com");
     }
@@ -214,7 +182,6 @@ mod tests {
             host: "example.com".to_string(),
             port: 9000,
             realm: RealmName::default(),
-            retry: RetryWait::default(),
         };
         assert_eq!(url.to_string(), "https://example.com:9000");
     }
@@ -225,7 +192,6 @@ mod tests {
             host: "example.com".to_string(),
             port: 8768,
             realm: "myrealm".parse().unwrap(),
-            retry: RetryWait::default(),
         };
         assert_eq!(url.to_string(), "https://example.com/myrealm");
     }
@@ -236,7 +202,6 @@ mod tests {
             host: "example.com".to_string(),
             port: 9000,
             realm: "myrealm".parse().unwrap(),
-            retry: RetryWait::default(),
         };
         assert_eq!(url.to_string(), "https://example.com:9000/myrealm");
     }
@@ -247,7 +212,6 @@ mod tests {
             host: "localhost".to_string(),
             port: 8768,
             realm: RealmName::default(),
-            retry: RetryWait::default(),
         };
         assert!(url.is_localhost());
 
@@ -255,7 +219,6 @@ mod tests {
             host: "127.0.0.1".to_string(),
             port: 8768,
             realm: RealmName::default(),
-            retry: RetryWait::default(),
         };
         assert!(url.is_localhost());
 
@@ -263,7 +226,6 @@ mod tests {
             host: "example.com".to_string(),
             port: 8768,
             realm: RealmName::default(),
-            retry: RetryWait::default(),
         };
         assert!(!url.is_localhost());
     }
@@ -308,7 +270,6 @@ mod tests {
             host: "gs.example.com".to_string(),
             port: 8768,
             realm: RealmName::default(),
-            retry: RetryWait::default(),
         };
         assert_eq!(url.canonical(), "gs.example.com:8768/default");
 
