@@ -320,7 +320,7 @@ impl InstanceState {
         let audit = sandpolis_audit::AuditManager::new(database.clone(), instance.clone()).await?;
 
         #[cfg(feature = "shell")]
-        let shell = sandpolis_shell::ShellManager::new(database.clone()).await?;
+        let shell = sandpolis_shell::ShellManager::new().await?;
 
         #[cfg(feature = "filesystem")]
         let filesystem = sandpolis_filesystem::FilesystemManager::new().await?;

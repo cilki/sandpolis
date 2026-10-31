@@ -7,14 +7,9 @@ version = "0.0.1"
 
 [dependencies]
 anyhow = { workspace = true }
-axum-macros = { workspace = true }
-axum = { workspace = true }
 base64 = "0.23"
 futures = { workspace = true, optional = true }
 inventory = { workspace = true }
-native_db = { workspace = true }
-native_model = { workspace = true }
-regex = { workspace = true }
 russh = { workspace = true, optional = true }
 sandpolis-agent = { path = "../sandpolis-agent", version = "0.0.1", optional = true }
 sandpolis-client = { path = "../sandpolis-client", version = "0.0.1", optional = true }

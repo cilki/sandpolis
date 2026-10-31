@@ -19,19 +19,6 @@ use tokio::{
 const STDOUT: i32 = 1;
 const STDERR: i32 = 2;
 
-/// Register a scheduled command to execute in a shell.
-#[derive(Serialize, Deserialize)]
-pub struct ShellScheduleRequest {
-    /// Shell executable to use for request
-    pub shell: PathBuf,
-
-    /// Command to execute in a new shell
-    pub command: ShellCommand,
-
-    /// Execution timeout in seconds
-    pub timeout: u64,
-}
-
 /// Request message for shell execute streams.
 #[derive(Serialize, Deserialize)]
 pub struct ShellExecuteStreamRequest {
@@ -67,10 +54,6 @@ pub enum ShellExecuteStreamResponse {
     NotFound,
     Timeout,
 }
-
-// TODO via database updates instead?
-#[derive(Serialize, Deserialize)]
-pub struct ShellListRequest;
 
 /// Why a command produced no exit code. Each corresponds to one of the
 /// responder's terminal responses.
@@ -148,11 +131,7 @@ impl StreamResponder for ShellExecuteStreamResponder {
     type Out = ShellExecuteStreamResponse;
 
     async fn on_message(&self, request: Self::In, sender: Sender<Self::Out>) -> Result<()> {
-        // Snippets live in the database, which this stream has no handle on.
-        let ShellCommand::Command(lines) = request.command else {
-            sender.send(ShellExecuteStreamResponse::NotFound).await?;
-            return Ok(());
-        };
+        let ShellCommand(lines) = request.command;
 
         let mut command = Command::new(&request.shell);
         command.stdin(Stdio::piped());
