@@ -109,7 +109,7 @@ impl Collector for SystemdCollector {
                         u.active_state = reported.clone();
                         u.sub_state = Some(unit.sub_state.clone());
                         Ok(())
-                    });
+                    })?;
 
                     // Only on the edge into `failed`. A unit that stays failed
                     // would otherwise re-notify on every poll.

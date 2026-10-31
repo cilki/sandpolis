@@ -1021,9 +1021,12 @@ impl<T: Data> Resident<T> {
         }
         assert_eq!(next.id(), previous.id(), "Primary key changed");
 
-        // Bump revisions
+        // Bump revisions. The retired copy is what gets persisted for the
+        // previous revision; the live value itself is only replaced once the
+        // write commits, so a refused or failed write leaves it untouched.
         next.set_revision(next.revision() + 1);
-        previous.set_revision(DataRevision::Previous(next.revision().into()));
+        let mut retired = previous.clone();
+        retired.set_revision(DataRevision::Previous(next.revision().into()));
 
         trace!(next = ?next, "Updated");
 
@@ -1033,15 +1036,15 @@ impl<T: Data> Resident<T> {
             self.db.write(next.scope())?
         };
 
-        if previous.expiration().is_some() {
+        if retired.expiration().is_some() {
             // Derive new id from the previous
-            next.set_id(previous.id().new_revision());
+            next.set_id(retired.id().new_revision());
             // Each revision records when it was written, giving history a time
             // axis; the original creation lives on in the oldest revision.
             next.set_creation(DataCreation::default());
 
             rw.insert(next.clone())?;
-            rw.upsert(previous.clone())?;
+            rw.upsert(retired.clone())?;
 
             // Retire this chain's expired revisions while we're here, so
             // temporal rows don't accumulate forever.
@@ -1052,7 +1055,7 @@ impl<T: Data> Resident<T> {
             // range instead would deserialize the entire revision chain on
             // every single update, making a chain of n revisions cost O(n²) to
             // build.
-            let revision_id = previous.id().revision_id();
+            let revision_id = retired.id().revision_id();
             let expired: Vec<T> = rw
                 .scan()
                 .secondary(T::expiration_key())?
@@ -1251,6 +1254,58 @@ mod test_scoped {
             Ok(())
         })?;
         assert_eq!(resident.read().a, "local bookkeeping");
+        Ok(())
+    }
+
+    /// A refused update must leave the resident exactly as it was. In
+    /// particular it must not retire the live value: if it did, the next
+    /// permitted update would inherit `Previous` and persist the live row as a
+    /// retired revision, which replicas and listeners then ignore.
+    #[tokio::test]
+    async fn refused_update_leaves_resident_live() -> Result<()> {
+        let table = table();
+        let db = test_scoped_db!(table, GlobalScopeData);
+        let realm = db.realm(RealmName::default())?;
+        let resident: Resident<GlobalScopeData> = realm.resident(())?;
+        let before = resident.read().revision();
+
+        assert!(
+            resident
+                .update(|d| {
+                    d.a = "estate data".into();
+                    Ok(())
+                })
+                .is_err()
+        );
+        assert!(
+            matches!(resident.read().revision(), DataRevision::Latest(_)),
+            "a refused update retired the live value: {:?}",
+            resident.read().revision()
+        );
+        assert_eq!(i64::from(resident.read().revision()), i64::from(before));
+        assert_eq!(resident.read().a, "");
+
+        resident.update_local(|d| {
+            d.a = "local bookkeeping".into();
+            Ok(())
+        })?;
+        assert!(matches!(
+            resident.read().revision(),
+            DataRevision::Latest(_)
+        ));
+
+        let r = realm.r_transaction()?;
+        let all: Vec<GlobalScopeData> =
+            r.scan().primary()?.all()?.collect::<Result<Vec<_>, _>>()?;
+        let stored = all
+            .iter()
+            .find(|d| d.a == "local bookkeeping")
+            .expect("the permitted update was persisted");
+        assert!(
+            matches!(stored.revision(), DataRevision::Latest(_)),
+            "the live row was persisted as a retired revision: {:?}",
+            stored.revision()
+        );
         Ok(())
     }
 
