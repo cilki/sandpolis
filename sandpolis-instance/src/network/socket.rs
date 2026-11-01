@@ -653,10 +653,6 @@ mod test {
         type In = Word;
         type Out = Word;
 
-        async fn new(_: Word, _: Sender<Word>) -> Result<Self> {
-            bail!("the tests build this directly")
-        }
-
         async fn on_message(&self, word: Word, _: Sender<Word>) -> Result<()> {
             self.replies.send(word.0)?;
             Ok(())
@@ -835,10 +831,6 @@ mod test {
     impl StreamRequester for BlobRequester {
         type In = Blob;
         type Out = Size;
-
-        async fn new(_: Size, _: Sender<Size>) -> Result<Self> {
-            bail!("the tests build this directly")
-        }
 
         async fn on_message(&self, blob: Blob, _: Sender<Size>) -> Result<()> {
             self.blobs.send(blob.0)?;

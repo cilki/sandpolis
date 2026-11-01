@@ -440,10 +440,6 @@ pub mod client {
         type In = ProbeFsResponse;
         type Out = ProbeFsRequest;
 
-        async fn new(_: Self::Out, _: Sender<Self::Out>) -> Result<Self> {
-            anyhow::bail!("ProbeFsStreamRequester must be constructed directly")
-        }
-
         async fn on_message(&self, response: Self::In, _: Sender<Self::Out>) -> Result<()> {
             let device_id = self.device_id;
             update(device_id, |view| {

@@ -136,12 +136,6 @@ mod client {
         type In = DesktopScreenshotResponse;
         type Out = DesktopScreenshotRequest;
 
-        async fn new(initial: Self::Out, tx: Sender<Self::Out>) -> Result<Self> {
-            tx.send(initial).await?;
-            let (result, _rx) = unbounded_channel();
-            Ok(Self { result })
-        }
-
         async fn on_message(&self, response: Self::In, _tx: Sender<Self::Out>) -> Result<()> {
             let outcome = match response {
                 DesktopScreenshotResponse::Ok(png) => DesktopScreenshotResult::Ok(png),

@@ -297,10 +297,6 @@ pub mod client {
         type In = ProbeServiceResponse;
         type Out = ProbeServiceRequest;
 
-        async fn new(_: Self::Out, _: Sender<Self::Out>) -> Result<Self> {
-            anyhow::bail!("ProbeServiceStreamRequester must be constructed directly")
-        }
-
         async fn on_message(&self, response: Self::In, _: Sender<Self::Out>) -> Result<()> {
             let device_id = self.device_id;
             update(device_id, |view| {
@@ -405,10 +401,6 @@ pub mod client {
         impl StreamRequester for ProbeServiceStreamRequester {
             type In = ProbeServiceResponse;
             type Out = ProbeServiceRequest;
-
-            async fn new(_: Self::Out, _: Sender<Self::Out>) -> Result<Self> {
-                anyhow::bail!("this requester must be constructed directly")
-            }
 
             async fn on_message(&self, response: Self::In, _: Sender<Self::Out>) -> Result<()> {
                 let _ = self.tx.send(response);

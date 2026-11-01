@@ -357,12 +357,6 @@ impl StreamRequester for SnapshotCreateStreamRequester {
     type In = SnapshotCreateResponse;
     type Out = SnapshotCreateRequest;
 
-    async fn new(initial: Self::Out, tx: Sender<Self::Out>) -> Result<Self> {
-        tx.send(initial).await?;
-        let (to_driver, _) = unbounded_channel();
-        Ok(Self { to_driver })
-    }
-
     async fn on_message(&self, response: Self::In, _tx: Sender<Self::Out>) -> Result<()> {
         let _ = self.to_driver.send(response);
         Ok(())
@@ -378,12 +372,6 @@ pub struct SnapshotApplyStreamRequester {
 impl StreamRequester for SnapshotApplyStreamRequester {
     type In = SnapshotApplyResponse;
     type Out = SnapshotApplyRequest;
-
-    async fn new(initial: Self::Out, tx: Sender<Self::Out>) -> Result<Self> {
-        tx.send(initial).await?;
-        let (to_driver, _) = unbounded_channel();
-        Ok(Self { to_driver })
-    }
 
     async fn on_message(&self, response: Self::In, _tx: Sender<Self::Out>) -> Result<()> {
         let _ = self.to_driver.send(response);

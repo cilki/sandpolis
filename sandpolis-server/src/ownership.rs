@@ -572,10 +572,6 @@ impl StreamRequester for OwnershipRequester {
     type In = OwnershipEvent;
     type Out = OwnershipRequest;
 
-    async fn new(_: Self::Out, _: Sender<Self::Out>) -> Result<Self> {
-        anyhow::bail!("OwnershipRequester must be constructed directly")
-    }
-
     async fn on_message(&self, event: Self::In, _: Sender<Self::Out>) -> Result<()> {
         let OwnershipEvent::Owned { scopes } = event;
 

@@ -434,12 +434,6 @@ mod client {
         type In = RtspSessionStreamResponse;
         type Out = RtspSessionStreamRequest;
 
-        async fn new(_: Self::Out, _: Sender<Self::Out>) -> Result<Self> {
-            // The GUI path constructs this via `channel()` and registers it
-            // directly; the registry's `new` path is unused.
-            anyhow::bail!("RtspSessionStreamRequester must be constructed directly")
-        }
-
         async fn on_message(&self, response: Self::In, _: Sender<Self::Out>) -> Result<()> {
             match response.frame {
                 RtspFrame::Parameters {

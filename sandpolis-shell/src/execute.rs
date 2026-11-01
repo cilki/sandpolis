@@ -84,7 +84,7 @@ pub enum ShellExecuteFailure {
     Timeout,
 }
 
-#[derive(Stream)]
+#[derive(Stream, Default)]
 pub struct ShellExecuteStreamRequester {
     exit_code: RwLock<Option<i32>>,
     duration: RwLock<Option<f64>>,
@@ -126,16 +126,6 @@ impl StreamRequester for ShellExecuteStreamRequester {
             }
         }
         Ok(())
-    }
-
-    async fn new(initial: Self::Out, tx: Sender<Self::Out>) -> Result<Self> {
-        tx.send(initial).await?;
-        Ok(Self {
-            exit_code: RwLock::new(None),
-            duration: RwLock::new(None),
-            output: RwLock::new(HashMap::new()),
-            failure: RwLock::new(None),
-        })
     }
 }
 

@@ -109,17 +109,15 @@ pub trait Stream {
 
 /// Initiates a stream and handles responses from the responder.
 ///
-/// The requester is responsible for starting the stream by sending the initial
-/// request message. It then receives responses from the `StreamResponder`.
+/// A requester is built by its caller and handed to `open_stream` (or the
+/// stream registry), which sends the initial request. It then receives
+/// responses from the `StreamResponder`.
 pub trait StreamRequester: Stream + Send + Sync + Sized + 'static {
     /// Input message type (responses from the responder).
     type In: for<'de> Deserialize<'de> + Send;
 
     /// Output message type (requests to the responder).
     type Out: Serialize;
-
-    /// Create a new requester and send the initial request.
-    fn new(_: Self::Out, tx: Sender<Self::Out>) -> impl Future<Output = Result<Self>> + Send;
 
     /// Called when the stream receives a response from the responder.
     fn on_message(
@@ -1016,9 +1014,6 @@ mod relay_tests {
     impl StreamRequester for RelayEchoRequester {
         type In = RelayPong;
         type Out = RelayPing;
-        async fn new(_: Self::Out, _: Sender<Self::Out>) -> Result<Self> {
-            anyhow::bail!("constructed directly")
-        }
         async fn on_message(&self, pong: Self::In, _: Sender<Self::Out>) -> Result<()> {
             let _ = self.result.send(pong.0).await;
             Ok(())

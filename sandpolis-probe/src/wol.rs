@@ -140,10 +140,6 @@ mod client {
         type In = WolPacketResponse;
         type Out = WolPacketRequest;
 
-        async fn new(_: Self::Out, _: Sender<Self::Out>) -> Result<Self> {
-            anyhow::bail!("WolStreamRequester must be constructed directly")
-        }
-
         async fn on_message(&self, response: Self::In, _: Sender<Self::Out>) -> Result<()> {
             match response {
                 WolPacketResponse::Ok => tracing::info!("Wake-on-LAN magic packet sent"),

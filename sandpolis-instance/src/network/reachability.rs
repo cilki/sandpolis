@@ -57,12 +57,6 @@ impl StreamRequester for ReachabilityRequester {
     type In = ReachabilityAck;
     type Out = ReachabilityRequest;
 
-    async fn new(_: Self::Out, _: Sender<Self::Out>) -> Result<Self> {
-        // Always constructed directly by the local stratum server's upstream
-        // task, never through the registry's factory path.
-        anyhow::bail!("ReachabilityRequester must be constructed directly")
-    }
-
     async fn on_message(&self, ack: Self::In, _: Sender<Self::Out>) -> Result<()> {
         tracing::debug!(
             accepted = ack.accepted,

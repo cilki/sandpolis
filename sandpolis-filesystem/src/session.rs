@@ -480,10 +480,6 @@ pub mod client {
         type In = FsSessionResponse;
         type Out = FsSessionRequest;
 
-        async fn new(_: Self::Out, _: Sender<Self::Out>) -> Result<Self> {
-            anyhow::bail!("FsSessionStreamRequester must be constructed directly")
-        }
-
         async fn on_message(&self, response: Self::In, _: Sender<Self::Out>) -> Result<()> {
             let instance = self.instance;
             update(instance, |view| {

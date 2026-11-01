@@ -634,11 +634,6 @@ mod client {
         type In = AccountMgmtResponse;
         type Out = AccountMgmtRequest;
 
-        async fn new(_: Self::Out, _: Sender<Self::Out>) -> Result<Self> {
-            // Constructed directly by `send_request`.
-            anyhow::bail!("AccountMgmtRequester must be constructed directly")
-        }
-
         async fn on_message(&self, response: Self::In, _: Sender<Self::Out>) -> Result<()> {
             if let AccountMgmtResponse::Error(e) = response {
                 tracing::warn!(error = %e, "Account management error");

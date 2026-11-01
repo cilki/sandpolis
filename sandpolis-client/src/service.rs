@@ -65,11 +65,6 @@ impl sandpolis_instance::network::StreamRequester for ServiceControlRequester {
     type In = ServiceControlResponse;
     type Out = ServiceControlRequest;
 
-    async fn new(_: Self::Out, _: Sender<Self::Out>) -> Result<Self> {
-        // Constructed directly by `send_request`.
-        anyhow::bail!("ServiceControlRequester must be constructed directly")
-    }
-
     async fn on_message(&self, response: Self::In, _: Sender<Self::Out>) -> Result<()> {
         if let ServiceControlResponse::Error(e) = response {
             tracing::warn!(error = %e, "Service control error");

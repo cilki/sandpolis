@@ -81,12 +81,6 @@ impl StreamRequester for SyncRequester {
     type In = SyncUpdate;
     type Out = SyncRequest;
 
-    async fn new(_: Self::Out, _: Sender<Self::Out>) -> Result<Self> {
-        // SyncRequester is always constructed directly via `InstanceConnection::open_sync`
-        // (the registry's `register` path does not call this).
-        anyhow::bail!("SyncRequester must be constructed directly")
-    }
-
     async fn on_message(&self, update: Self::In, _: Sender<Self::Out>) -> Result<()> {
         for (record, e) in SYNC.apply_all(&self.db, &update.records) {
             tracing::debug!(error = %e, model = record.model_id, "Failed to apply sync record");

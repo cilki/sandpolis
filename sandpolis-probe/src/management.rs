@@ -203,11 +203,6 @@ mod client {
         type In = DeviceMgmtResponse;
         type Out = DeviceMgmtRequest;
 
-        async fn new(_: Self::Out, _: Sender<Self::Out>) -> Result<Self> {
-            // Constructed directly and registered via `subscribe`/`send`.
-            anyhow::bail!("DeviceMgmtRequester must be constructed directly")
-        }
-
         async fn on_message(&self, response: Self::In, _: Sender<Self::Out>) -> Result<()> {
             match response {
                 DeviceMgmtResponse::List(list) => {

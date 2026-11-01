@@ -465,14 +465,6 @@ mod client {
         type In = DesktopStreamResponse;
         type Out = RdpStreamRequest;
 
-        async fn new(initial: Self::Out, tx: Sender<Self::Out>) -> Result<Self> {
-            tx.send(initial).await?;
-            // The GUI-facing constructor is `channel()`; this trait path has no
-            // receiver attached, so decoded events are discarded.
-            let (events, _rx) = unbounded_channel();
-            Ok(Self { events })
-        }
-
         async fn on_message(&self, response: Self::In, _tx: Sender<Self::Out>) -> Result<()> {
             let event = match response {
                 DesktopStreamResponse::Started { width, height } => DesktopStreamEvent::Started {

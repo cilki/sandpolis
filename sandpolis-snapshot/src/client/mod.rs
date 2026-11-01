@@ -93,12 +93,6 @@ impl StreamRequester for SnapshotMgmtStreamRequester {
     type In = SnapshotMgmtResponse;
     type Out = SnapshotMgmtRequest;
 
-    async fn new(initial: Self::Out, tx: Sender<Self::Out>) -> Result<Self> {
-        tx.send(initial).await?;
-        let (result, _rx) = unbounded_channel();
-        Ok(Self { result })
-    }
-
     async fn on_message(&self, response: Self::In, _tx: Sender<Self::Out>) -> Result<()> {
         let _ = self.result.send(response);
         Ok(())

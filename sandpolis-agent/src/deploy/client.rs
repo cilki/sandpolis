@@ -28,14 +28,6 @@ impl StreamRequester for DeployStreamRequester {
     type In = DeployStreamResponse;
     type Out = DeployStreamRequest;
 
-    async fn new(initial: Self::Out, tx: Sender<Self::Out>) -> Result<Self> {
-        tx.send(initial).await?;
-        // The GUI-facing constructor is `channel()`; this trait path has no
-        // receiver attached, so progress would be discarded.
-        let (events, _rx) = unbounded_channel();
-        Ok(Self { events })
-    }
-
     async fn on_message(&self, response: Self::In, _tx: Sender<Self::Out>) -> Result<()> {
         // The receiver is gone once the dialog closes, which is not an error.
         let _ = self.events.send(response);

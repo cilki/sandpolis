@@ -256,12 +256,6 @@ impl StreamRequester for TunnelStreamRequester {
     type In = TunnelStreamResponse;
     type Out = TunnelStreamRequest;
 
-    async fn new(initial: Self::Out, tx: Sender<Self::Out>) -> Result<Self> {
-        tx.send(initial).await?;
-        let (responses, _rx) = unbounded_channel();
-        Ok(Self { responses })
-    }
-
     async fn on_message(&self, response: Self::In, _tx: Sender<Self::Out>) -> Result<()> {
         let _ = self.responses.send(response);
         Ok(())

@@ -38,15 +38,6 @@ impl sandpolis_instance::network::StreamRequester for BootStreamRequester {
     type In = BootStreamResponse;
     type Out = BootStreamRequest;
 
-    async fn new(
-        _: Self::Out,
-        _: tokio::sync::mpsc::Sender<Self::Out>,
-    ) -> anyhow::Result<Self> {
-        // Always constructed directly with the shared state and passed to
-        // `InstanceConnection::open_stream`.
-        anyhow::bail!("BootStreamRequester must be constructed directly")
-    }
-
     async fn on_message(
         &self,
         response: Self::In,

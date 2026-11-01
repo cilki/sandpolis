@@ -276,14 +276,6 @@ mod client {
         type In = ShellSessionStreamResponse;
         type Out = ShellSessionStreamRequest;
 
-        async fn new(initial: Self::Out, tx: Sender<Self::Out>) -> Result<Self> {
-            tx.send(initial).await?;
-            // The GUI-facing constructor is `channel()`; this trait path has no
-            // receiver attached, so decoded output is discarded.
-            let (output, _rx) = unbounded_channel();
-            Ok(Self { output })
-        }
-
         async fn on_message(&self, response: Self::In, _tx: Sender<Self::Out>) -> Result<()> {
             let event = match response {
                 ShellSessionStreamResponse::Output { stdout, stderr } => {
