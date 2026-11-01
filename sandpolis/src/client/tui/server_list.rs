@@ -28,6 +28,13 @@ use validator::Validate;
 
 use super::GRAPHICS;
 
+/// The logo drawn above the server list when the terminal can show images.
+/// Embedded so the widget doesn't depend on any file existing at runtime.
+const BANNER_PNG: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../.github/images/sandpolis-256.png"
+));
+
 pub struct ServerListWidget {
     state: Arc<RwLock<ServerListWidgetState>>,
     focused: bool,
@@ -87,13 +94,11 @@ impl ServerListWidget {
             .build()?;
 
         let state = Arc::new(RwLock::new(ServerListWidgetState {
-            default_banner_image: GRAPHICS.as_ref().map(|picker| {
-                picker.new_resize_protocol(
-                    image::ImageReader::open("/home/cilki/Downloads/sandpolis-256.png")
-                        .unwrap()
-                        .decode()
-                        .unwrap(),
-                )
+            default_banner_image: GRAPHICS.as_ref().and_then(|picker| {
+                let banner = image::load_from_memory(BANNER_PNG)
+                    .inspect_err(|e| debug!(error = %e, "Failed to decode the banner image"))
+                    .ok()?;
+                Some(picker.new_resize_protocol(banner))
             }),
             mode: ServerListWidgetMode::Normal,
             add_server_widget: AddServerWidget::default(),
@@ -832,5 +837,16 @@ impl AddServerWidget {
         Paragraph::new(masked_password)
             .style(style)
             .render(chunks[1], buf);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn banner_is_a_decodable_image() {
+        let banner = image::load_from_memory(BANNER_PNG).unwrap();
+        assert!(banner.width() > 0 && banner.height() > 0);
     }
 }
