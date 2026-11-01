@@ -77,7 +77,10 @@ fn parse_server_name(s: &str) -> Result<String, String> {
     let url: ServerUrl = s
         .parse()
         .map_err(|e| format!("not a valid hostname: {e}"))?;
-    if url.host != s || url.port != ServerUrl::default_port() || url.realm != Default::default() {
+    if url.host != s
+        || url.port != ServerUrl::default_port()
+        || url.realm != Default::default()
+    {
         return Err("expected a bare hostname or IP address, without port or realm".into());
     }
     Ok(url.host)
@@ -1040,13 +1043,16 @@ mod client {
                 "{}@{}'s password: ",
                 resolved.username, resolved.host
             ))?
-        } else if let Some(key_path) = resolved.key_path.as_deref().filter(|path| {
-            std::fs::read_to_string(path).is_ok_and(|pem| deploy_form::key_looks_encrypted(&pem))
-        }) {
+        } else if let Some(key_path) = resolved
+            .key_path
+            .as_deref()
+            .filter(|path| {
+                std::fs::read_to_string(path)
+                    .is_ok_and(|pem| deploy_form::key_looks_encrypted(&pem))
+            })
+        {
             if !std::io::stdin().is_terminal() {
-                bail!(
-                    "the key at {key_path} is encrypted and a passphrase prompt needs a terminal"
-                );
+                bail!("the key at {key_path} is encrypted and a passphrase prompt needs a terminal");
             }
             rpassword::prompt_password(format!("Enter passphrase for {key_path}: "))?
         } else {
@@ -1094,9 +1100,7 @@ mod client {
                             serde_json::json!({"status": "deployed", "reconfigured": reconfigured})
                         );
                     } else if reconfigured {
-                        println!(
-                            "{target_host} already had an agent; its realm cert was rewritten."
-                        );
+                        println!("{target_host} already had an agent; its realm cert was rewritten.");
                     } else {
                         println!("The agent is installed and running on {target_host}.");
                     }
