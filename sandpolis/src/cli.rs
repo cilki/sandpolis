@@ -77,10 +77,7 @@ fn parse_server_name(s: &str) -> Result<String, String> {
     let url: ServerUrl = s
         .parse()
         .map_err(|e| format!("not a valid hostname: {e}"))?;
-    if url.host != s
-        || url.port != ServerUrl::default_port()
-        || url.realm != Default::default()
-    {
+    if url.host != s || url.port != ServerUrl::default_port() || url.realm != Default::default() {
         return Err("expected a bare hostname or IP address, without port or realm".into());
     }
     Ok(url.host)
@@ -106,7 +103,8 @@ pub struct AgentArgs {
     pub realm: Option<PathBuf>,
 }
 
-/// Flags for the client, which every client subcommand shares.
+/// Flags for the client, which every client subcommand shares. Like
+/// [`TargetArgs`] they are global, so they may follow a nested subcommand.
 #[cfg(feature = "client")]
 #[derive(clap::Args, Debug, Clone, Default)]
 pub struct ClientArgs {
@@ -117,7 +115,7 @@ pub struct ClientArgs {
     /// name is the server's address. Without it, realm certs are read from
     /// `--data` (or the default state directory), and if none are found there
     /// either, the GUI asks for one to be picked interactively.
-    #[clap(long, value_name = "PATH", env = "S7S_REALM")]
+    #[clap(long, global = true, value_name = "PATH", env = "S7S_REALM")]
     pub realm: Option<PathBuf>,
 
     /// Directory holding this client's database and its realm certs
@@ -128,7 +126,7 @@ pub struct ClientArgs {
     /// naming a file on the command line. Without this flag the client is
     /// ephemeral: its database is kept in memory and nothing survives the
     /// process.
-    #[clap(long, value_name = "DIR", env = "S7S_DATA")]
+    #[clap(long, global = true, value_name = "DIR", env = "S7S_DATA")]
     pub data: Option<PathBuf>,
 }
 
@@ -837,6 +835,67 @@ mod test_client_commands {
     fn agents_deploy_requires_a_host() {
         assert!(CommandLine::try_parse_from(["sandpolis", "agents", "deploy"]).is_err());
     }
+
+    /// The target and client flags belong to the layer command, but a user
+    /// naturally writes them after its subcommand, so both orders parse to the
+    /// same thing.
+    #[cfg(feature = "snapshot")]
+    #[test]
+    fn target_flags_follow_the_subcommand() {
+        const AGENT: &str = "agent-sxz5yz3boae4";
+        for argv in [
+            [
+                "sandpolis",
+                "snapshot",
+                "--json",
+                "--instance",
+                AGENT,
+                "--realm",
+                "./r.realm.pem",
+                "list",
+            ],
+            [
+                "sandpolis",
+                "snapshot",
+                "list",
+                "--json",
+                "--instance",
+                AGENT,
+                "--realm",
+                "./r.realm.pem",
+            ],
+            [
+                "sandpolis",
+                "snapshot",
+                "--json",
+                "list",
+                "--instance",
+                AGENT,
+                "--realm",
+                "./r.realm.pem",
+            ],
+        ] {
+            let command = CommandLine::try_parse_from(argv)
+                .unwrap_or_else(|e| panic!("{argv:?} should parse: {e}"))
+                .command;
+
+            let Commands::Snapshot {
+                action: Some(sandpolis_snapshot::cli::SnapshotCommand::List { .. }),
+                target,
+                client,
+            } = command
+            else {
+                panic!("expected the snapshot list subcommand, got {command:?}");
+            };
+            assert!(target.json, "{argv:?}");
+            assert_eq!(target.instance, Some(AGENT.parse().unwrap()), "{argv:?}");
+            assert_eq!(
+                client.realm.as_deref(),
+                Some(std::path::Path::new("./r.realm.pem")),
+                "{argv:?}"
+            );
+        }
+    }
 }
 
 #[cfg(all(test, feature = "client"))]
@@ -981,16 +1040,13 @@ mod client {
                 "{}@{}'s password: ",
                 resolved.username, resolved.host
             ))?
-        } else if let Some(key_path) = resolved
-            .key_path
-            .as_deref()
-            .filter(|path| {
-                std::fs::read_to_string(path)
-                    .is_ok_and(|pem| deploy_form::key_looks_encrypted(&pem))
-            })
-        {
+        } else if let Some(key_path) = resolved.key_path.as_deref().filter(|path| {
+            std::fs::read_to_string(path).is_ok_and(|pem| deploy_form::key_looks_encrypted(&pem))
+        }) {
             if !std::io::stdin().is_terminal() {
-                bail!("the key at {key_path} is encrypted and a passphrase prompt needs a terminal");
+                bail!(
+                    "the key at {key_path} is encrypted and a passphrase prompt needs a terminal"
+                );
             }
             rpassword::prompt_password(format!("Enter passphrase for {key_path}: "))?
         } else {
@@ -1038,7 +1094,9 @@ mod client {
                             serde_json::json!({"status": "deployed", "reconfigured": reconfigured})
                         );
                     } else if reconfigured {
-                        println!("{target_host} already had an agent; its realm cert was rewritten.");
+                        println!(
+                            "{target_host} already had an agent; its realm cert was rewritten."
+                        );
                     } else {
                         println!("The agent is installed and running on {target_host}.");
                     }
