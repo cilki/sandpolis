@@ -604,8 +604,8 @@ fn drive_desktop_screenshots(
                     Ok(_) => {}
                     Err(e) => warn!(error = %e, "Failed to decode screenshot for {:?}", target),
                 },
-                DesktopScreenshotResult::Failed => {
-                    warn!("Screenshot failed for {:?}", target);
+                DesktopScreenshotResult::Failed(reason) => {
+                    warn!(%reason, "Screenshot failed for {:?}", target);
                 }
             }
             finished.push(target);

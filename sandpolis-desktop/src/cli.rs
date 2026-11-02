@@ -5,6 +5,7 @@ use crate::screenshot::{
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
 use sandpolis_client::cli::TargetArgs;
+use serde_json::json;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -82,17 +83,17 @@ async fn screenshot(
 
     let bytes = match result {
         Ok(Some(DesktopScreenshotResult::Ok(png))) => png,
-        Ok(Some(DesktopScreenshotResult::Failed)) => {
+        Ok(Some(DesktopScreenshotResult::Failed(reason))) => {
             if target.json {
-                println!("{{\"status\":\"failed\"}}");
+                println!("{}", json!({ "status": "failed", "error": reason }));
             } else {
-                eprintln!("Screenshot capture failed");
+                eprintln!("Screenshot capture failed: {reason}");
             }
             return Ok(ExitCode::FAILURE);
         }
         _ => {
             if target.json {
-                println!("{{\"status\":\"timeout\"}}");
+                println!("{}", json!({ "status": "timeout" }));
             } else {
                 eprintln!("Timed out waiting for screenshot");
             }
@@ -108,14 +109,11 @@ async fn screenshot(
     }
 
     if target.json {
-        match &output {
-            Some(p) => println!(
-                "{{\"status\":\"ok\",\"bytes\":{},\"output\":{:?}}}",
-                bytes.len(),
-                p.display().to_string()
-            ),
-            None => println!("{{\"status\":\"ok\",\"bytes\":{}}}", bytes.len()),
+        let mut report = json!({ "status": "ok", "bytes": bytes.len() });
+        if let Some(path) = &output {
+            report["output"] = path.display().to_string().into();
         }
+        println!("{report}");
     }
 
     Ok(ExitCode::SUCCESS)
