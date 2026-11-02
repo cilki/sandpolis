@@ -19,16 +19,22 @@ pub async fn start(command: crate::cli::Commands) -> anyhow::Result<std::process
     // is how a client installed by a package manager is configured. An
     // ephemeral client falls back to the default cert dir, which is where the
     // GUI realm-selection dialog saves an imported cert.
-    let endpoint_certs = match args.realm.as_deref() {
-        Some(path) => crate::load_realm_cert(Some(path))?.into_iter().collect(),
-        None => match args.data.as_deref() {
-            Some(dir) => crate::load_realm_certs_dir(dir)?,
-            None => match default_realm_cert_dir() {
-                Some(dir) => crate::load_realm_certs_dir(&dir)?,
-                None => Vec::new(),
-            },
-        },
+    let cert_dir = match args.realm {
+        Some(_) => None,
+        None => args.data.clone().or_else(default_realm_cert_dir),
     };
+    let endpoint_certs = match (args.realm.as_deref(), cert_dir.as_deref()) {
+        (Some(path), _) => crate::load_realm_cert(Some(path))?.into_iter().collect(),
+        (None, Some(dir)) => crate::load_realm_certs_dir(dir)?,
+        (None, None) => Vec::new(),
+    };
+
+    // The GUI asks for a cert when it has none, and `servers` manages the saved
+    // servers itself. Every other subcommand would only wait out its connection
+    // timeout and then report that nothing connected, so say why up front.
+    if endpoint_certs.is_empty() && command.needs_realm_cert() {
+        anyhow::bail!(missing_realm_cert(cert_dir.as_deref()));
+    }
 
     let state = crate::endpoint_state(&options, endpoint_certs.clone()).await?;
 
@@ -203,6 +209,21 @@ pub fn spawn_client_sync(state: InstanceState) {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }
     });
+}
+
+/// Why a subcommand that has to reach a server can't: there was no realm cert
+/// to connect with, and `searched` (if any) is the directory that held none.
+#[cfg(not(target_os = "android"))]
+fn missing_realm_cert(searched: Option<&std::path::Path>) -> String {
+    let hint = "pass --realm <PATH> ($S7S_REALM) naming a server's realm cert, \
+                or --data <DIR> ($S7S_DATA) holding a *.realm.pem";
+    match searched {
+        Some(dir) => format!(
+            "no realm cert to connect with: {} holds no *.realm.pem; {hint}",
+            dir.display()
+        ),
+        None => format!("no realm cert to connect with; {hint}"),
+    }
 }
 
 /// Where a client without `--data` keeps its realm certs, so a cert imported
