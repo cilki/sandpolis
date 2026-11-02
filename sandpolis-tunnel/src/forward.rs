@@ -257,7 +257,18 @@ async fn tcp_write_task(
 ) {
     loop {
         tokio::select! {
-            _ = cancel.cancelled() => break,
+            _ = cancel.cancelled() => {
+                // A `Close` is handled only after every `Data` the peer sent
+                // before it, so whatever is still queued here is the tail of
+                // the stream. Without this, a close racing that tail (e.g. a
+                // target that answers and hangs up) truncates the response.
+                while let Ok(bytes) = rx.try_recv() {
+                    if write_half.write_all(&bytes).await.is_err() {
+                        break;
+                    }
+                }
+                break;
+            }
             bytes = rx.recv() => match bytes {
                 Some(bytes) => {
                     if write_half.write_all(&bytes).await.is_err() {
@@ -677,6 +688,55 @@ mod tests {
         let mut buf = [0u8; 4];
         client.read_exact(&mut buf).await.unwrap();
         assert_eq!(&buf, b"pong");
+        cancel.cancel();
+    }
+
+    /// A `Close` that arrives right behind the last `Data` (a target that
+    /// answers and hangs up) still delivers that data before the socket is
+    /// shut down. Whether the close beats the queued bytes is a coin flip per
+    /// connection, so try enough of them that a regression can't hide.
+    #[tokio::test]
+    async fn listener_delivers_data_queued_before_close() {
+        let addr = {
+            let probe = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            probe.local_addr().unwrap()
+        };
+        let (to_tx, to_rx) = unbounded_channel();
+        let (resp_tx, mut resp_rx) = unbounded_channel();
+        let cancel = CancellationToken::new();
+        tokio::spawn(run_endpoint(
+            TunnelRole::Listener { listen: addr },
+            TunnelProtocol::Tcp,
+            to_rx,
+            resp_tx,
+            cancel.clone(),
+        ));
+        assert!(matches!(recv(&mut resp_rx).await, TunnelStreamResponse::Ready));
+
+        let payload: Vec<u8> = (0..64 * 1024).map(|i| i as u8).collect();
+        for _ in 0..32 {
+            let mut client = TcpStream::connect(addr).await.unwrap();
+            let conn = match recv(&mut resp_rx).await {
+                TunnelStreamResponse::Accepted { conn, .. } => conn,
+                other => panic!("unexpected {other:?}"),
+            };
+
+            to_tx
+                .send(TunnelStreamRequest::Data {
+                    conn,
+                    bytes: payload.clone(),
+                })
+                .unwrap();
+            to_tx.send(TunnelStreamRequest::Close { conn }).unwrap();
+
+            let mut received = Vec::new();
+            tokio::time::timeout(Duration::from_secs(5), client.read_to_end(&mut received))
+                .await
+                .expect("listener never shut the connection down")
+                .unwrap();
+            assert_eq!(received.len(), payload.len(), "connection {conn} lost its tail");
+            assert_eq!(received, payload);
+        }
         cancel.cancel();
     }
 }
