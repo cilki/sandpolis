@@ -149,6 +149,7 @@ client = [
   "dep:ratatui",
   "dep:ratatui-image",
   "dep:clap",
+  "dep:serde_json",
   "sandpolis-client/client",
 ]
 server = []

@@ -11,8 +11,8 @@ pub struct DesktopScreenshotRequest {
 pub enum DesktopScreenshotResponse {
     /// PNG-encoded screenshot
     Ok(Vec<u8>),
-    /// The requested desktop could not be captured
-    Failed,
+    /// The requested desktop could not be captured, and why
+    Failed(String),
 }
 
 #[cfg(feature = "agent")]
@@ -40,7 +40,9 @@ mod agent {
                 .map(DesktopScreenshotResponse::Ok)
                 .unwrap_or_else(|e| {
                     warn!(error = %e, "Screenshot capture failed");
-                    DesktopScreenshotResponse::Failed
+                    // The whole chain, so the requester learns which step failed
+                    // and not just the innermost IO error.
+                    DesktopScreenshotResponse::Failed(format!("{e:#}"))
                 });
 
             sender.send(response).await?;
@@ -115,7 +117,8 @@ mod client {
     /// the GUI decodes them via [`decode_png`] only when it needs a texture.
     pub enum DesktopScreenshotResult {
         Ok(Vec<u8>),
-        Failed,
+        /// The agent couldn't capture the desktop; carries its reason.
+        Failed(String),
     }
 
     /// Client side of a one-shot screenshot: forwards the returned PNG bytes.
@@ -139,7 +142,9 @@ mod client {
         async fn on_message(&self, response: Self::In, _tx: Sender<Self::Out>) -> Result<()> {
             let outcome = match response {
                 DesktopScreenshotResponse::Ok(png) => DesktopScreenshotResult::Ok(png),
-                DesktopScreenshotResponse::Failed => DesktopScreenshotResult::Failed,
+                DesktopScreenshotResponse::Failed(reason) => {
+                    DesktopScreenshotResult::Failed(reason)
+                }
             };
             let _ = self.result.send(outcome);
             Ok(())

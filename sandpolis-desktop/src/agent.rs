@@ -1,5 +1,5 @@
 use crate::DesktopData;
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use sandpolis_agent::Collector;
 use sandpolis_instance::InstanceId;
 use sandpolis_instance::database::{RealmDatabase, ResidentVec};
@@ -7,7 +7,10 @@ use tracing::trace;
 
 /// Locate a display by name, falling back to the primary (then first) display.
 pub(crate) fn find_display(desktop_uuid: &str) -> Result<crate::capture::Display> {
-    let mut displays = crate::capture::Display::all()?;
+    // On Linux, "connection refused" here means there is no X11 or Wayland
+    // server to talk to, which is meaningless without saying what was refused.
+    let mut displays =
+        crate::capture::Display::all().context("Failed to list the displays to capture")?;
     if let Some(idx) = displays.iter().position(|d| d.name() == desktop_uuid) {
         return Ok(displays.swap_remove(idx));
     }
