@@ -500,6 +500,16 @@ impl Commands {
         }
     }
 
+    /// Whether this client command can't do anything without a realm cert to
+    /// connect with. The GUI asks for one interactively, and `servers` manages
+    /// the saved server list on its own; every other subcommand talks to a
+    /// server.
+    #[cfg(feature = "client")]
+    pub fn needs_realm_cert(&self) -> bool {
+        !matches!(self, Commands::Client { .. } | Commands::Servers { .. })
+            && self.client_args().is_some()
+    }
+
     /// Whether this command draws in the terminal it was started from, which is
     /// every client subcommand except the GUI. Those get a log file instead of
     /// stderr so the logs don't corrupt the view.
@@ -831,6 +841,27 @@ mod test_client_commands {
         assert_eq!(port, Some(2222));
         assert!(dryrun);
         assert!(json);
+    }
+
+    /// Only the subcommands that talk to a server refuse to start without a
+    /// realm cert: the GUI asks for one, `servers` manages the saved list on
+    /// its own, and the daemons and standalone commands aren't clients at all.
+    #[test]
+    fn which_commands_need_a_realm_cert() {
+        let needs = |argv: &[&str]| {
+            CommandLine::try_parse_from(argv)
+                .unwrap_or_else(|e| panic!("{argv:?} should parse: {e}"))
+                .command
+                .needs_realm_cert()
+        };
+
+        assert!(needs(&["sandpolis", "agents", "list", "--json"]));
+        assert!(needs(&["sandpolis", "agents", "deploy", "example.com"]));
+        assert!(!needs(&["sandpolis", "servers", "list", "--json"]));
+        assert!(!needs(&["sandpolis", "client"]));
+        assert!(!needs(&["sandpolis", "about"]));
+        #[cfg(feature = "snapshot")]
+        assert!(needs(&["sandpolis", "snapshot", "list", "--json"]));
     }
 
     /// A deployment with no target host is meaningless.
