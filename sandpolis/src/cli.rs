@@ -1216,8 +1216,7 @@ mod client {
     /// asynchronously), then subscribes to the instance model and reads from
     /// the client database.
     async fn list_agents_json() -> Result<ExitCode> {
-        use sandpolis_instance::InstanceManagerData;
-        use sandpolis_instance::realm::RealmName;
+        use crate::client::tui::agent_list;
         use std::time::Duration;
 
         info!("list_agents_json: waiting for server connection (up to 30s)");
@@ -1230,45 +1229,16 @@ mod client {
         info!("list_agents_json: connection established, subscribing");
 
         // Subscribe only after the connection is up so the call isn't a no-op.
-        sandpolis_client::sync::subscribe(sandpolis_instance::instance_manager_model_id(), None);
-        sandpolis_client::sync::subscribe(
-            sandpolis_instance::network::liveness::liveness_model_id(),
-            None,
-        );
+        agent_list::subscribe();
 
         // Give the subscription a moment to deliver records.
         info!("list_agents_json: waiting 500ms for sync delivery");
         tokio::time::sleep(Duration::from_millis(500)).await;
         info!("list_agents_json: reading client database");
 
-        let db =
-            sandpolis_client::sync::client_database().context("client database unavailable")?;
-        let realm = db.realm(RealmName::default())?;
-        let r = realm.r_transaction()?;
-        let all: Vec<InstanceManagerData> =
-            r.scan().primary()?.all()?.collect::<Result<Vec<_>, _>>()?;
-
-        // Which of them are up is a separate, server-written model, resolved the
-        // same way the GUI resolves it: an observer's word counts only while the
-        // observer itself is reachable.
-        let rows: Vec<sandpolis_instance::network::liveness::LivenessData> =
-            r.scan().primary()?.all()?.collect::<Result<Vec<_>, _>>()?;
-        let online = sandpolis_instance::network::liveness::reachable(
-            rows,
-            sandpolis_client::sync::connected_instances(),
-        );
-
-        let agents: Vec<_> = all
-            .into_iter()
-            .filter(|i| i._instance_id.is_agent())
-            .map(|i| {
-                serde_json::json!({
-                    "instance_id": i._instance_id.to_string(),
-                    "cluster_id": i.cluster_id.to_string(),
-                    "os": i.os_info.to_string(),
-                    "online": online.contains(&i._instance_id),
-                })
-            })
+        let agents: Vec<_> = agent_list::agents()?
+            .iter()
+            .map(agent_list::AgentRow::to_json)
             .collect();
 
         println!("{}", serde_json::to_string_pretty(&agents)?);
