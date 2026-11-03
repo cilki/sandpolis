@@ -6,11 +6,10 @@ use anyhow::{Result, bail};
 use sandpolis_client::cli::TargetArgs;
 use sandpolis_instance::InstanceId;
 use std::collections::HashMap;
-use std::io::{IsTerminal, Write};
+use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
-use tokio::io::AsyncReadExt;
 
 /// Open an interactive shell on the target agent. With `--instance` this relays
 /// the local terminal byte-for-byte to a PTY on the agent (like ssh); without
@@ -90,18 +89,23 @@ async fn run_raw_session(instance: InstanceId) -> Result<ExitCode> {
 
     let raw = RawModeGuard::new();
 
+    // A plain thread rather than `tokio::io::stdin()`: tokio reads stdin on its
+    // blocking pool, and shutting the runtime down waits for that read to
+    // return. Once the remote shell exits nobody is typing, so the process
+    // would hang until the next keypress. Process exit doesn't wait for this
+    // thread.
     let stdin_outbound = outbound.clone();
-    tokio::spawn(async move {
-        let mut stdin = tokio::io::stdin();
+    std::thread::spawn(move || {
+        let mut stdin = std::io::stdin().lock();
         let mut buf = [0u8; 8192];
         loop {
-            match stdin.read(&mut buf).await {
+            match stdin.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
                     let request = ShellSessionStreamRequest::Stdin {
                         data: buf[..n].to_vec(),
                     };
-                    if stdin_outbound.send(request).await.is_err() {
+                    if stdin_outbound.blocking_send(request).is_err() {
                         break;
                     }
                 }
