@@ -237,15 +237,48 @@ impl InstanceId {
     }
 }
 
+/// On the wire (CBOR, the database) an instance id is its 64-bit wire value.
+/// In human-readable formats — the CLI's `--json` output, the database browser
+/// — it's the `<type>-<base32>` form instead, the one `--instance` takes and
+/// `agents list` prints; a raw wire value there can't be fed back to anything.
 impl Serialize for InstanceId {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.to_wire().serialize(serializer)
+        if serializer.is_human_readable() {
+            serializer.collect_str(self)
+        } else {
+            self.to_wire().serialize(serializer)
+        }
     }
 }
 
 impl<'de> Deserialize<'de> for InstanceId {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Self::from_wire(u64::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+        if !deserializer.is_human_readable() {
+            return Self::from_wire(u64::deserialize(deserializer)?)
+                .map_err(serde::de::Error::custom);
+        }
+
+        // Human-readable input takes the display form, and still the wire
+        // value that was all these formats carried before.
+        struct Visitor;
+
+        impl serde::de::Visitor<'_> for Visitor {
+            type Value = InstanceId;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("an instance id (`<type>-<base32>` or its wire value)")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, s: &str) -> Result<InstanceId, E> {
+                s.parse().map_err(E::custom)
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<InstanceId, E> {
+                InstanceId::from_wire(value).map_err(E::custom)
+            }
+        }
+
+        deserializer.deserialize_any(Visitor)
     }
 }
 
@@ -396,6 +429,32 @@ mod test_id {
         assert_eq!(
             serde_cbor::from_slice::<AgentId>(&serde_cbor::to_vec(&agent).unwrap()).unwrap(),
             agent
+        );
+    }
+
+    #[test]
+    fn test_human_readable_serde() {
+        for instance_type in InstanceType::iter() {
+            let id = InstanceId::random(instance_type);
+
+            // The form `--instance` parses, not the wire value
+            let json = serde_json::to_string(&id).unwrap();
+            assert_eq!(json, format!("\"{id}\""));
+            assert_eq!(serde_json::from_str::<InstanceId>(&json).unwrap(), id);
+
+            // Wire values written before still read back
+            let legacy = id.to_wire().to_string();
+            assert_eq!(serde_json::from_str::<InstanceId>(&legacy).unwrap(), id);
+        }
+
+        assert!(serde_json::from_str::<InstanceId>("\"probe-aaaaaaaaaaaa\"").is_err());
+        assert!(serde_json::from_str::<InstanceId>("0").is_err());
+
+        // The binary encoding is unaffected
+        let id = InstanceId::random(InstanceType::Agent);
+        assert_eq!(
+            serde_cbor::to_vec(&id).unwrap(),
+            serde_cbor::to_vec(&id.to_wire()).unwrap()
         );
     }
 
