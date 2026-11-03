@@ -91,7 +91,18 @@ async fn screenshot(
             }
             return Ok(ExitCode::FAILURE);
         }
-        _ => {
+        // The stream was closed without an answer: the server couldn't
+        // reach the agent, or the connection went away.
+        Ok(None) => {
+            let reason = format!("{instance} is not reachable");
+            if target.json {
+                println!("{}", json!({ "status": "failed", "error": reason }));
+            } else {
+                eprintln!("Screenshot capture failed: {reason}");
+            }
+            return Ok(ExitCode::FAILURE);
+        }
+        Err(_) => {
             if target.json {
                 println!("{}", json!({ "status": "timeout" }));
             } else {

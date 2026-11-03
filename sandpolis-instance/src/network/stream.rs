@@ -386,10 +386,18 @@ impl StreamRegistry {
 
         // No local handler. On a server, try to relay to another connection.
         let relay = self.relay.read().unwrap().clone();
-        if let Some(relay) = relay.and_then(|r| r.upgrade())
-            && relay.route(&message, &self.tx).await
-        {
-            return;
+        if let Some(relay) = relay.and_then(|r| r.upgrade()) {
+            match relay.route(&message, &self.tx).await {
+                Routed::Forwarded => return,
+                // Nobody is going to answer, so say so: closing finishes the
+                // stream on the wire, and the requester's end goes with it
+                // instead of waiting on a reply that can never come.
+                Routed::Undeliverable => {
+                    self.close(message.stream_id);
+                    return;
+                }
+                Routed::Local => {}
+            }
         }
 
         // A stream is only ever opened reliably, so an unreliable message for
@@ -681,9 +689,8 @@ impl Relay {
             .filter(|c| !c.streams.is_origin(origin_tx))
     }
 
-    /// Attempt to route an unhandled message. Returns `true` if it was forwarded
-    /// (and should not be handled locally).
-    async fn route(&self, message: &StreamMessage, origin_tx: &Sender<StreamMessage>) -> bool {
+    /// Attempt to route an unhandled message.
+    async fn route(&self, message: &StreamMessage, origin_tx: &Sender<StreamMessage>) -> Routed {
         // Client -> agent: an addressed message. Remember the origin so responses
         // can return, then forward to the target connection.
         if let Some(target) = message.dst {
@@ -694,17 +701,17 @@ impl Relay {
                     hops = message.hops,
                     "Stream message exceeded the hop limit; dropping (routing loop?)"
                 );
-                return true;
+                return Routed::Undeliverable;
             }
 
             let Some(conn) = self.next_hop(target, origin_tx) else {
-                // Unknown target: swallow it rather than mis-handling locally.
+                // Unknown target: never handled locally, since it isn't for us.
                 tracing::warn!(
                     target = %target,
                     stream_id = ?message.stream_id,
                     "No connection for relay target; dropping stream message"
                 );
-                return true;
+                return Routed::Undeliverable;
             };
             self.routes
                 .lock()
@@ -723,7 +730,7 @@ impl Relay {
                     unreliable: message.unreliable,
                 })
                 .await;
-            return true;
+            return Routed::Forwarded;
         }
 
         // Agent -> client: a response on a relayed stream goes back to its origin.
@@ -735,11 +742,22 @@ impl Relay {
                         .with_unreliable(message.unreliable),
                 )
                 .await;
-            return true;
+            return Routed::Forwarded;
         }
 
-        false
+        Routed::Local
     }
+}
+
+/// What [`Relay::route`] did with a message.
+enum Routed {
+    /// Sent on toward its destination (or back to its origin).
+    Forwarded,
+    /// Addressed elsewhere, but there's no way to get it there: the target
+    /// isn't reachable from here, or the message has been relayed too often.
+    Undeliverable,
+    /// Not a relayed message; it's for this instance to handle.
+    Local,
 }
 
 /// Wrapper that adapts a typed `StreamRequester` to the object-safe `RawStreamHandler`.

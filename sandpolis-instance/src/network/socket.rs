@@ -777,6 +777,32 @@ mod test {
         Ok(())
     }
 
+    /// A stream addressed to an instance the server can't reach is closed
+    /// back to the requester, so it learns there will be no answer instead of
+    /// waiting forever.
+    #[tokio::test]
+    async fn a_stream_to_an_unreachable_target_is_closed() -> Result<()> {
+        let harness = Harness::new()?;
+        let (server_client, client) = harness.attach(ClientId::random().into(), &[], &[]).await?;
+
+        let inbound = Arc::new(RwLock::new(vec![server_client.clone()]));
+        let relay = Arc::new(Relay::new(inbound));
+        server_client.streams.set_relay(Arc::downgrade(&relay));
+
+        let (replies, mut received) = mpsc::unbounded_channel();
+        client
+            .open_stream_to(
+                AgentId::random().into(),
+                EchoRequester { replies },
+                Word("anyone?".into()),
+            )
+            .await?;
+
+        // The requester is dropped with its stream, which ends the channel.
+        assert_eq!(timeout(Duration::from_secs(5), received.recv()).await?, None);
+        Ok(())
+    }
+
     #[derive(Serialize, Deserialize)]
     struct Size(usize);
 

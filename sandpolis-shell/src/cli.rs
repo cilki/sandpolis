@@ -151,11 +151,11 @@ async fn run_raw_session(instance: InstanceId) -> Result<ExitCode> {
                 }
             }
             Some(ShellEvent::Exited(code)) => break code,
-            // The requester was dropped without an exit event, which only
-            // happens when the server connection went away.
+            // The stream was closed without an exit event: the server
+            // couldn't reach the agent, or the connection went away.
             None => {
                 drop(raw);
-                eprintln!("Connection lost");
+                eprintln!("Connection to {instance} lost (is it connected?)");
                 return Ok(ExitCode::FAILURE);
             }
         }
