@@ -109,51 +109,16 @@ pub async fn start(args: crate::cli::AgentArgs) -> Result<std::process::ExitCode
         let mut agent = tokio::spawn(main(options, state));
         tokio::select! {
             result = &mut agent => result??,
-            () = shutdown_signal() => {
+            () = crate::shutdown_signal() => {
                 info!("Shutting down");
                 let connections = server.outbound.read().unwrap().clone();
                 agent.abort();
                 for connection in connections {
-                    connection.close(SHUTDOWN_GRACE).await;
+                    connection.close(crate::SHUTDOWN_GRACE).await;
                 }
             }
         }
         Ok(std::process::ExitCode::SUCCESS)
-    }
-}
-
-/// The longest an agent on its way out waits for the server to hear it go.
-#[cfg(not(feature = "uki"))]
-const SHUTDOWN_GRACE: Duration = Duration::from_secs(1);
-
-/// Resolve when the agent is asked to stop: Ctrl-C, or the `SIGTERM` a service
-/// manager or `docker stop` sends.
-///
-/// Left to the default disposition, either signal kills the process without
-/// closing its connection, and the server goes on showing the agent attached
-/// until the keepalive deadline runs out.
-#[cfg(not(feature = "uki"))]
-async fn shutdown_signal() {
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{SignalKind, signal};
-        match signal(SignalKind::terminate()) {
-            Ok(mut terminate) => {
-                tokio::select! {
-                    _ = tokio::signal::ctrl_c() => {}
-                    _ = terminate.recv() => {}
-                }
-                return;
-            }
-            Err(e) => warn!(error = %e, "Cannot listen for SIGTERM; only Ctrl-C will stop cleanly"),
-        }
-    }
-
-    if let Err(e) = tokio::signal::ctrl_c().await {
-        // Without a handler the default disposition still applies, so the
-        // signal still stops the agent, just not cleanly.
-        warn!(error = %e, "Cannot listen for Ctrl-C");
-        std::future::pending::<()>().await;
     }
 }
 

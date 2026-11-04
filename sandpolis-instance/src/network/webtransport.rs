@@ -450,9 +450,20 @@ impl Dialer {
     /// `grace`) until it has gone out before it returns: a process that exits
     /// right after this call still leaves cleanly.
     pub async fn close(&self, grace: std::time::Duration) {
-        self.endpoint.close(VarInt::from_u32(0), b"");
-        let _ = tokio::time::timeout(grace, self.endpoint.wait_idle()).await;
+        close_endpoint(&self.endpoint, grace).await;
     }
+}
+
+/// Close every session on `endpoint`, telling each peer with a close frame,
+/// and wait (for at most `grace`) for the frames to go out.
+///
+/// QUIC runs over UDP, so a process that just exits leaves its peers nothing
+/// to notice: they go on sending into the void until the keepalive deadline
+/// runs out. A server endpoint must not be accepting when this runs, since
+/// `wtransport` panics in `accept` on a closed endpoint.
+pub async fn close_endpoint<Side>(endpoint: &Endpoint<Side>, grace: std::time::Duration) {
+    endpoint.close(VarInt::from_u32(0), b"");
+    let _ = tokio::time::timeout(grace, endpoint.wait_idle()).await;
 }
 
 #[cfg(test)]

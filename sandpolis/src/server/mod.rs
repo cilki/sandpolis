@@ -516,14 +516,15 @@ pub async fn main(options: RuntimeOptions, state: InstanceState) -> Result<()> {
     info!(listener = ?options.listen, "Starting server endpoint");
     let endpoint =
         sandpolis_instance::network::webtransport::server_endpoint(options.listen, tls.clone())?;
-    tokio::spawn(sandpolis_server::user::server::serve_sessions(
-        endpoint,
+    let endpoint = std::sync::Arc::new(endpoint);
+    let sessions = tokio::spawn(sandpolis_server::user::server::serve_sessions(
+        endpoint.clone(),
         state.user.clone(),
         notify_cert_failures,
     ));
 
     info!(listener = ?options.listen, "Starting server listener");
-    axum_server::bind(options.listen)
+    let http = axum_server::bind(options.listen)
         .acceptor(sandpolis_instance::realm::server::RealmAcceptor::new(
             tls,
             notify_cert_failures,
@@ -532,8 +533,33 @@ pub async fn main(options: RuntimeOptions, state: InstanceState) -> Result<()> {
             app.clone()
                 .with_state(state.clone())
                 .into_make_service_with_connect_info::<std::net::SocketAddr>(),
-        )
-        .await?;
+        );
+
+    tokio::select! {
+        result = http => result?,
+        () = crate::shutdown_signal() => {
+            info!("Shutting down");
+
+            // `wtransport` panics in `accept` on a closed endpoint, so the
+            // accept loop has to be gone before the endpoint closes.
+            sessions.abort();
+            let _ = sessions.await;
+
+            // Everything attached here hears the server go and starts
+            // reconnecting at once, rather than after the keepalive deadline.
+            sandpolis_instance::network::webtransport::close_endpoint(
+                &endpoint,
+                crate::SHUTDOWN_GRACE,
+            )
+            .await;
+
+            // A local stratum server's link to its global stratum server.
+            let upstream = state.server.outbound.read().unwrap().clone();
+            for connection in upstream {
+                connection.close(crate::SHUTDOWN_GRACE).await;
+            }
+        }
+    }
     Ok(())
 }
 

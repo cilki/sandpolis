@@ -402,9 +402,10 @@ impl FromRequestParts<UserManager> for Claims {
 /// Accept attachments on the server's WebTransport endpoint, forever.
 ///
 /// Each session is handled on its own task, so a slow handshake never holds
-/// up the next one.
+/// up the next one. The endpoint is shared so the server can close it on its
+/// way out, which it may only do once this task has stopped.
 pub async fn serve_sessions(
-    endpoint: wtransport::Endpoint<wtransport::endpoint::endpoint_side::Server>,
+    endpoint: std::sync::Arc<wtransport::Endpoint<wtransport::endpoint::endpoint_side::Server>>,
     state: UserManager,
     notify_cert_failures: bool,
 ) {

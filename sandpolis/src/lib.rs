@@ -24,6 +24,44 @@ pub mod server;
 /// depending on `sandpolis-server` directly.
 pub use sandpolis_server::ServerStratum;
 
+/// The longest a daemon on its way out waits for its peers to hear it go.
+#[cfg(any(feature = "server", all(feature = "agent", not(feature = "uki"))))]
+pub(crate) const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Resolve when a daemon is asked to stop: Ctrl-C, or the `SIGTERM` a service
+/// manager or `docker stop` sends.
+///
+/// Left to the default disposition, either signal kills the process without
+/// closing its connections. They run over QUIC, so the peers are told nothing
+/// and go on showing the attachment until the keepalive deadline runs out.
+#[cfg(any(feature = "server", all(feature = "agent", not(feature = "uki"))))]
+pub(crate) async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut terminate) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = terminate.recv() => {}
+                }
+                return;
+            }
+            Err(e) => tracing::warn!(
+                error = %e,
+                "Cannot listen for SIGTERM; only Ctrl-C will stop cleanly"
+            ),
+        }
+    }
+
+    if let Err(e) = tokio::signal::ctrl_c().await {
+        // Without a handler the default disposition still applies, so the
+        // signal still stops the process, just not cleanly.
+        tracing::warn!(error = %e, "Cannot listen for Ctrl-C");
+        std::future::pending::<()>().await;
+    }
+}
+
 /// Everything this process was told to do on the command line, plus what the
 /// realm cert it was given contributes.
 ///
