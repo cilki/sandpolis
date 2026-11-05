@@ -36,20 +36,49 @@ pub async fn start(command: crate::cli::Commands) -> anyhow::Result<std::process
         spawn_server_connection(state.clone(), cert.url()?);
     }
 
+    let result = run(command, options, &state).await;
+    hang_up(&state).await;
+    result
+}
+
+/// Run the GUI, or `command`'s TUI (or JSON output), to completion.
+#[cfg(not(target_os = "android"))]
+async fn run(
+    command: crate::cli::Commands,
+    options: crate::RuntimeOptions,
+    state: &InstanceState,
+) -> anyhow::Result<std::process::ExitCode> {
     // The GUI establishes the sync session itself; a subcommand needs it
     // before its view can show anything.
     if let crate::cli::Commands::Client { .. } = command {
         tracing::info!("Starting Sandpolis client");
-        gui::main(options, state).await?;
+        gui::main(options, state.clone()).await?;
         return Ok(std::process::ExitCode::SUCCESS);
     }
 
     // A subcommand against a realm with user accounts needs a login before it
     // can do anything, so the prompt comes up front rather than mid-command.
-    ensure_authenticated(&state).await?;
+    ensure_authenticated(state).await?;
 
     spawn_client_sync(state.clone());
-    command.dispatch_client(&state).await
+    command.dispatch_client(state).await
+}
+
+/// The longest a client on its way out waits for its servers to hear it go.
+#[cfg(not(target_os = "android"))]
+const HANG_UP_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Close every server connection before the process exits.
+///
+/// A client that simply exits looks the same to a server as one that lost its
+/// network, so it would stay attached (and be counted as connected) until the
+/// keepalive deadline ran out. That matters most for the one-shot subcommands,
+/// which come and go within a second.
+#[cfg(not(target_os = "android"))]
+async fn hang_up(state: &InstanceState) {
+    for connection in state.server.server_connections() {
+        connection.close(HANG_UP_GRACE).await;
+    }
 }
 
 /// Make sure every connected server that requires a login holds a usable auth
