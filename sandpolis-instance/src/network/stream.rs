@@ -379,8 +379,11 @@ impl StreamRegistry {
         {
             tracing::warn!(
                 tag = message.stream_id.tag(),
-                "Dropping unauthorized stream message"
+                "Refusing an unauthorized stream"
             );
+            // Nobody here is going to answer it, so finish it on the wire
+            // rather than leave the requester waiting on a reply.
+            self.close(message.stream_id);
             return;
         }
 
@@ -445,6 +448,18 @@ impl StreamRegistry {
 
             // Dispatch the message to the newly created handler
             handler.on_receive_raw(&message.payload, response_tx).await;
+        } else {
+            // This build has no responder for the stream type (a subsystem it
+            // was compiled without, or one only some agents carry, like the
+            // boot agent's snapshot streams). Finish the stream so the
+            // requester learns there will be no answer instead of waiting
+            // forever for one.
+            tracing::debug!(
+                tag = type_tag,
+                stream_id = ?message.stream_id,
+                "Refusing a stream no responder here answers"
+            );
+            self.close(message.stream_id);
         }
     }
 

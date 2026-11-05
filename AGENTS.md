@@ -319,10 +319,11 @@ cd android && ./gradlew assembleDebug
 
 ## `sandpolis-snapshot`
 
-- Boot-mode gating is now compile-time: the block stream responders only exist
-  in `uki` builds, so regular agents never answer them. Remaining runtime work:
-  the management responder should refuse (rather than hang on) an agent that
-  isn't a boot agent
+- Boot-mode gating is compile-time: the block stream responders only exist in
+  `uki` builds, so a regular agent closes the block stream unanswered and the
+  operation fails after that round trip. The management responder could refuse
+  up front instead, once the server can tell which attached agents are boot
+  agents
 - Multi-stratum: the management responder refuses agents attached to a different
   (LS) server instead of forwarding to the owner
 - Deleting non-leaf snapshots (requires a rebase/squash of the chain)

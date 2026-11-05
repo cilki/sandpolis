@@ -803,6 +803,42 @@ mod test {
         Ok(())
     }
 
+    /// A stream of a type the peer has no responder for (a subsystem its build
+    /// lacks) is closed back to the requester rather than left unanswered.
+    #[tokio::test]
+    async fn a_stream_nobody_answers_is_closed() -> Result<()> {
+        let harness = Harness::new()?;
+        let (_server, client) = harness.attach(ClientId::random().into(), &[], &[]).await?;
+
+        let (replies, mut received) = mpsc::unbounded_channel();
+        client
+            .open_stream(EchoRequester { replies }, Word("anyone?".into()))
+            .await?;
+
+        assert_eq!(timeout(Duration::from_secs(5), received.recv()).await?, None);
+        Ok(())
+    }
+
+    /// Likewise a stream the connection's gate refuses.
+    #[tokio::test]
+    async fn an_unauthorized_stream_is_closed() -> Result<()> {
+        let harness = Harness::new()?;
+        let echo = Echo::default();
+        let (server, client) = harness
+            .attach(ClientId::random().into(), &[&echo], &[])
+            .await?;
+        server.streams.set_gate(Arc::new(|_| false));
+
+        let (replies, mut received) = mpsc::unbounded_channel();
+        client
+            .open_stream(EchoRequester { replies }, Word("let me in".into()))
+            .await?;
+
+        assert_eq!(timeout(Duration::from_secs(5), received.recv()).await?, None);
+        assert_eq!(echo.live(), 0);
+        Ok(())
+    }
+
     #[derive(Serialize, Deserialize)]
     struct Size(usize);
 

@@ -116,8 +116,9 @@ impl StreamResponder for SnapshotMgmtStreamResponder {
             return Ok(());
         };
 
-        // TODO boot-mode gating: cold snapshots should be refused unless the
-        // agent is running in boot mode, but no such mode exists yet.
+        // Only a boot agent (`uki` build) has the block stream responders. A
+        // regular agent refuses the stream by closing it, which the drivers
+        // report (see `first_event`).
         let (agent, partition_uuid, direction) = match &request {
             SnapshotMgmtRequest::Create {
                 agent,
@@ -388,6 +389,17 @@ async fn next_event<T>(events: &mut UnboundedReceiver<T>) -> Result<T> {
     }
 }
 
+/// Wait for the agent's first reply on a block stream. An agent that closes the
+/// stream before saying anything has no responder for it: only an agent booted
+/// into the UKI answers the block streams.
+async fn first_event<T>(events: &mut UnboundedReceiver<T>) -> Result<T> {
+    match tokio::time::timeout(INACTIVITY_TIMEOUT, events.recv()).await {
+        Ok(Some(event)) => Ok(event),
+        Ok(None) => bail!("The agent does not take snapshots; only a boot agent does"),
+        Err(_) => bail!("The stream went silent"),
+    }
+}
+
 /// Read the block at `offset` of the staging file.
 async fn read_staging_block(
     file: &mut tokio::fs::File,
@@ -477,7 +489,7 @@ async fn drive_create_inner(
             .await?;
 
         // The agent measures the partition before anything else flows.
-        let size = match next_event(&mut events).await? {
+        let size = match first_event(&mut events).await? {
             SnapshotCreateResponse::Meta { size } => size,
             SnapshotCreateResponse::Failed(e) => bail!("{e}"),
             _ => bail!("The agent broke protocol"),
@@ -678,8 +690,9 @@ async fn drive_apply_inner(
 
         let mut bytes = 0u64;
         let mut last_progress = Instant::now();
+        let mut event = first_event(&mut events).await?;
         loop {
-            match next_event(&mut events).await? {
+            match event {
                 SnapshotApplyResponse::Hashes { offset, hashes } => {
                     if hashes.len() > HASHES_PER_MESSAGE {
                         bail!("Oversized hash batch");
@@ -723,6 +736,7 @@ async fn drive_apply_inner(
                 SnapshotApplyResponse::Applied => break,
                 SnapshotApplyResponse::Failed(e) => bail!("{e}"),
             }
+            event = next_event(&mut events).await?;
         }
 
         debug!(partition = %partition_uuid, snapshot = %snapshot.uuid, bytes, "Snapshot applied");
