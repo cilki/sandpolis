@@ -456,6 +456,8 @@ mod test {
         server_id: ServerId,
         endpoint: wtransport::Endpoint<wtransport::endpoint::endpoint_side::Server>,
         dialer: Arc<Dialer>,
+        ca: RealmCert,
+        url: ServerUrl,
         connections: crate::database::ResidentVec<ConnectionData>,
         _database: crate::database::DatabaseManager,
     }
@@ -504,6 +506,8 @@ mod test {
                 server_id,
                 endpoint,
                 dialer,
+                ca,
+                url,
                 connections,
                 _database: database,
             })
@@ -1023,6 +1027,32 @@ mod test {
         harness.dialer.close(Duration::from_secs(1)).await;
         timeout(Duration::from_secs(5), server.cancel.cancelled()).await?;
         assert!(harness.dialer.connect([]).await.is_err());
+        Ok(())
+    }
+
+    /// A server name that resolves to an address the server isn't listening
+    /// on first (`localhost` is `::1` first, a default listener is IPv4 only)
+    /// still attaches, through the next address, and the next dial goes
+    /// straight to the one that worked.
+    #[tokio::test]
+    async fn dialing_falls_back_to_the_next_address() -> Result<()> {
+        let mut harness = Harness::new()?;
+        let port = harness.url.port;
+        // Loopback, but not the address the server is bound to, so nothing
+        // ever answers there.
+        let unanswered = format!("127.0.0.2:{port}").parse()?;
+        let listening = format!("127.0.0.1:{port}").parse()?;
+        harness.dialer = Dialer::to_addresses(
+            &harness.ca.endpoint_cert(&harness.url)?,
+            &harness.url,
+            vec![unanswered, listening],
+        )?;
+
+        harness.attach(AgentId::random().into(), &[], &[]).await?;
+
+        let started = std::time::Instant::now();
+        harness.attach(AgentId::random().into(), &[], &[]).await?;
+        assert!(started.elapsed() < webtransport::FALLBACK_DELAY);
         Ok(())
     }
 }

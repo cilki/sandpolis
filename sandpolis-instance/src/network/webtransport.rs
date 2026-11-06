@@ -24,11 +24,14 @@ use crate::InstanceId;
 use crate::realm::RealmCert;
 use crate::realm::url::ServerUrl;
 use anyhow::{Result, anyhow, bail};
+use futures_util::stream::FuturesUnordered;
 use futures_util::{Sink, Stream, StreamExt};
+use std::collections::VecDeque;
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
 use tokio_util::bytes::{Buf, BufMut, Bytes, BytesMut};
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
@@ -382,10 +385,21 @@ impl wtransport::config::DnsResolver for RealmResolver {
     }
 }
 
-/// Everything a dialer needs to open sessions with one server: the endpoint
-/// configured with its realm cert, and the URL the sessions are requested on.
+/// How long a session request to one of the server's addresses goes
+/// unanswered before the next address is tried alongside it. QUIC's first
+/// retransmission of an unanswered handshake is due after about this long, so
+/// an address that hasn't answered by then has probably dropped the packet.
+pub(crate) const FALLBACK_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Everything a dialer needs to open sessions with one server: an endpoint
+/// configured with its realm cert for each address the server's name resolves
+/// to, and the URL the sessions are requested on.
 pub struct Dialer {
-    endpoint: Endpoint<endpoint_side::Client>,
+    /// One per address, in the order the resolver gave them. Each is bound in
+    /// its address's family, and its resolver answers with that address only.
+    endpoints: Vec<Endpoint<endpoint_side::Client>>,
+    /// The endpoint that last opened a session, tried first next time.
+    preferred: AtomicUsize,
     url: String,
 }
 
@@ -395,35 +409,69 @@ impl Dialer {
     /// Only the realm CA may vouch for the server, so the platform trust
     /// store is left out entirely.
     pub fn new(cert: &RealmCert, url: &ServerUrl) -> Result<Arc<Self>> {
-        let address = url
-            .resolve()?
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow!("{} does not resolve", url.host))?;
+        Self::to_addresses(cert, url, url.resolve()?)
+    }
 
+    /// [`new`](Self::new), dialing `addresses` instead of whatever `url`'s
+    /// host resolves to.
+    ///
+    /// Every address gets an endpoint, because a name commonly resolves to
+    /// more than one and the server needn't listen on all of them: `localhost`
+    /// is `::1` first on most hosts, while a server's default listener is
+    /// IPv4 only. HTTPS requests get over this on their own (the connector
+    /// falls back between addresses), so the session has to as well, or an
+    /// instance whose banner request just succeeded would never attach.
+    pub(crate) fn to_addresses(
+        cert: &RealmCert,
+        url: &ServerUrl,
+        addresses: Vec<SocketAddr>,
+    ) -> Result<Arc<Self>> {
         let server_name = format!("{}.{}", cert.cluster_id()?, cert.name);
 
         let mut tls = cert.client_tls_config()?;
         tls.alpn_protocols = vec![wtransport::proto::WEBTRANSPORT_ALPN.to_vec()];
 
-        // Bind in the server's address family, so a v4-only host doesn't fail
-        // on the dual-stack default.
-        let bind: SocketAddr = match address {
-            SocketAddr::V4(_) => "0.0.0.0:0".parse()?,
-            SocketAddr::V6(_) => "[::]:0".parse()?,
-        };
+        let mut endpoints = Vec::new();
+        let mut unbindable = None;
+        for (index, &address) in addresses.iter().enumerate() {
+            if addresses[..index].contains(&address) {
+                continue;
+            }
 
-        let config = ClientConfig::builder()
-            .with_bind_address(bind)
-            .with_custom_tls_and_transport(tls, transport_config())
-            .dns_resolver(RealmResolver {
-                name: format!("{server_name}:{}", url.port),
-                address,
-            })
-            .build();
+            // Bind in the server's address family, so a v4-only host doesn't
+            // fail on the dual-stack default.
+            let bind: SocketAddr = match address {
+                SocketAddr::V4(_) => "0.0.0.0:0".parse()?,
+                SocketAddr::V6(_) => "[::]:0".parse()?,
+            };
+
+            let config = ClientConfig::builder()
+                .with_bind_address(bind)
+                .with_custom_tls_and_transport(tls.clone(), transport_config())
+                .dns_resolver(RealmResolver {
+                    name: format!("{server_name}:{}", url.port),
+                    address,
+                })
+                .build();
+
+            // A host without IPv6 can't bind for an IPv6 address, which only
+            // matters if no other address is left to dial.
+            match Endpoint::client(config) {
+                Ok(endpoint) => endpoints.push(endpoint),
+                Err(error) => unbindable = Some(error),
+            }
+        }
+
+        if endpoints.is_empty() {
+            return Err(match unbindable {
+                Some(error) => error.into(),
+                None => anyhow!("{} does not resolve", url.host),
+            });
+        }
 
         Ok(Arc::new(Self {
-            endpoint: Endpoint::client(config)?,
+            endpoints,
+            preferred: AtomicUsize::new(0),
             url: format!("https://{server_name}:{}{CONNECT_PATH}", url.port),
         }))
     }
@@ -431,6 +479,12 @@ impl Dialer {
     /// Request a session, carrying `headers` for the server to read before it
     /// decides. The attachment isn't usable until [`accept`] has run on the
     /// returned connection.
+    ///
+    /// With more than one address to try, starting with the one that worked
+    /// last, the next is dialed whenever the previous fails or
+    /// [`FALLBACK_DELAY`] passes without an answer — without giving up on the
+    /// ones still pending — and the first session to open wins. The others
+    /// are dropped, which abandons their handshakes.
     pub async fn connect(
         &self,
         headers: impl IntoIterator<Item = (String, String)>,
@@ -439,7 +493,51 @@ impl Dialer {
         for (key, value) in headers {
             options = options.add_header(key, value);
         }
-        Ok(self.endpoint.connect(options.build()).await?)
+        let options = options.build();
+
+        let count = self.endpoints.len();
+        let first = self.preferred.load(Ordering::Relaxed);
+        let mut remaining: VecDeque<usize> = (0..count).map(|i| (first + i) % count).collect();
+
+        let attempt = |index: usize| {
+            let options = options.clone();
+            async move { (index, self.endpoints[index].connect(options).await) }
+        };
+
+        let mut attempts = FuturesUnordered::new();
+        let mut last_error = None;
+        loop {
+            if attempts.is_empty() {
+                match remaining.pop_front() {
+                    Some(index) => attempts.push(attempt(index)),
+                    None => break,
+                }
+            }
+
+            tokio::select! {
+                Some((index, result)) = attempts.next() => match result {
+                    Ok(connection) => {
+                        self.preferred.store(index, Ordering::Relaxed);
+                        return Ok(connection);
+                    }
+                    Err(error) => {
+                        last_error = Some(error);
+                        if let Some(index) = remaining.pop_front() {
+                            attempts.push(attempt(index));
+                        }
+                    }
+                },
+                _ = tokio::time::sleep(FALLBACK_DELAY), if !remaining.is_empty() => {
+                    if let Some(index) = remaining.pop_front() {
+                        attempts.push(attempt(index));
+                    }
+                }
+            }
+        }
+
+        Err(last_error
+            .map(Into::into)
+            .unwrap_or_else(|| anyhow!("no address to dial")))
     }
 
     /// Close every session this dialer opened and stop it opening more.
@@ -450,7 +548,12 @@ impl Dialer {
     /// `grace`) until it has gone out before it returns: a process that exits
     /// right after this call still leaves cleanly.
     pub async fn close(&self, grace: std::time::Duration) {
-        close_endpoint(&self.endpoint, grace).await;
+        futures_util::future::join_all(
+            self.endpoints
+                .iter()
+                .map(|endpoint| close_endpoint(endpoint, grace)),
+        )
+        .await;
     }
 }
 
