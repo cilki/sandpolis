@@ -723,6 +723,54 @@ async fn accept_session(
 }
 
 #[cfg(test)]
+mod test_token {
+    use super::*;
+
+    /// A token minted the way `new_token` mints it verifies the way the
+    /// connect handler and the `Claims` extractor verify it. jsonwebtoken
+    /// panics on either side unless one of its crypto backends is enabled, so
+    /// this is what fails (by panicking) if the `aws_lc_rs` feature goes.
+    #[test]
+    fn minted_token_verifies() {
+        let secret = ServerJwtSecret::new();
+        let claims = Claims {
+            sub: "alice".parse().unwrap(),
+            exp: (chrono::Utc::now().timestamp() + 60) as usize,
+            perms: vec!["shell:*".parse().unwrap()],
+            realm: RealmName::default(),
+        };
+
+        let token = jsonwebtoken::encode(
+            &jsonwebtoken::Header::default(),
+            &claims,
+            &jsonwebtoken::EncodingKey::from_secret(&secret.value),
+        )
+        .unwrap();
+
+        let decoded = decode::<Claims>(
+            &token,
+            &jsonwebtoken::DecodingKey::from_secret(&secret.value),
+            &Validation::default(),
+        )
+        .unwrap()
+        .claims;
+        assert_eq!(decoded.sub, claims.sub);
+        assert_eq!(decoded.realm, claims.realm);
+
+        // Another server's secret doesn't verify it.
+        let other = ServerJwtSecret::new();
+        assert!(
+            decode::<Claims>(
+                &token,
+                &jsonwebtoken::DecodingKey::from_secret(&other.value),
+                &Validation::default(),
+            )
+            .is_err()
+        );
+    }
+}
+
+#[cfg(test)]
 mod test_cert_auth_error {
     use super::*;
 

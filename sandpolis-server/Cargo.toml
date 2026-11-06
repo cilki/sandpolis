@@ -18,7 +18,7 @@ chrono = { workspace = true }
 clap = { workspace = true }
 futures = { workspace = true }
 inventory = { workspace = true }
-jsonwebtoken = { version = "11.1.0", optional = true }
+jsonwebtoken = { version = "11.1.0", optional = true, features = ["aws_lc_rs"] }
 native_db = { workspace = true }
 native_model = { workspace = true }
 passwords = { workspace = true, optional = true, features = [
