@@ -374,9 +374,14 @@ impl ServerConnection {
             .push_local(cd)
             .map_err(|e| anyhow!("{e}"))?;
 
-        // Serve our local realm database to the peer's sync subscriptions
-        // (an agent answering the server's all-filter requester).
-        let realm_db = network.database.realm(self.realm.clone())?;
+        // Serve our local database to the peer's sync subscriptions (an agent
+        // answering the server's pull of its records). That is always the
+        // default realm, whichever realm this connection attaches to: an
+        // instance that dials out writes everything it owns there — its
+        // identity, its services' results, its notifications — so serving the
+        // connection's realm instead would hand the server an empty database
+        // for any realm but `default`.
+        let realm_db = network.database.realm(RealmName::default())?;
         let sync_reg = sandpolis_instance::network::sync::SyncResponderRegistration::new(realm_db);
         let mut handlers: Vec<&dyn sandpolis_instance::network::RegisterResponders> =
             collected_responders().collect();
