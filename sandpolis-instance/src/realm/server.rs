@@ -16,6 +16,7 @@ use axum::{
     middleware::Next,
     response::Response,
 };
+use axum_server::tls::TlsService;
 use axum_server::tls_rustls::RustlsConfig;
 use axum_server::{accept::Accept, tls_rustls::RustlsAcceptor};
 use futures_util::future::BoxFuture;
@@ -364,7 +365,9 @@ where
     S: Send + 'static,
 {
     type Stream = TlsStream<I>;
-    type Service = AddExtension<S, TlsData>;
+    // Since axum-server 0.9 the rustls acceptor wraps the service in its own
+    // `TlsService` (which adds `Arc<TlsInfo>`); `TlsData` layers on top.
+    type Service = AddExtension<TlsService<S>, TlsData>;
     type Future = BoxFuture<'static, io::Result<(Self::Stream, Self::Service)>>;
 
     fn accept(&self, stream: I, service: S) -> Self::Future {
