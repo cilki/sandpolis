@@ -1,3 +1,4 @@
+use crate::ProbeId;
 use crate::ProbeManager;
 use crate::ProbeType;
 use crate::service::{ProbeServiceOp, ProbeServiceResponse, client as probe_service};
@@ -41,11 +42,13 @@ pub enum ServiceAction {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum ProbeCommand {
+    /// List the registered probe devices and their ids
+    List,
     /// Manage service instances (containers/VMs) on a probe device
     Service {
-        /// The registered device id
+        /// The registered device id (`probe-<base32>`, as `probe list` shows)
         #[clap(long)]
-        device: u64,
+        device: ProbeId,
 
         /// The protocol to reach the device by
         #[clap(long)]
@@ -64,13 +67,14 @@ pub async fn dispatch(
     target: TargetArgs,
     _layer: &ProbeManager,
 ) -> Result<ExitCode> {
-    if let Some(ProbeCommand::Service {
-        device,
-        protocol,
-        action,
-    }) = action
-    {
-        return service(target, device, protocol.into(), action).await;
+    match action {
+        Some(ProbeCommand::List) => return list(target).await,
+        Some(ProbeCommand::Service {
+            device,
+            protocol,
+            action,
+        }) => return service(target, device, protocol.into(), action).await,
+        None => {}
     }
 
     if target.json {
@@ -81,9 +85,71 @@ pub async fn dispatch(
     Ok(ExitCode::SUCCESS)
 }
 
+async fn list(target: TargetArgs) -> Result<ExitCode> {
+    let conn = sandpolis_client::sync::wait_for_connection(Duration::from_secs(10))
+        .await
+        .context("no server connection")?;
+
+    let devices = match crate::management::list_once(conn, Duration::from_secs(10)).await {
+        Ok(devices) => devices,
+        Err(e) => {
+            if target.json {
+                println!(
+                    "{{\"status\":\"failed\",\"error\":{}}}",
+                    serde_json::to_string(&e.to_string())?
+                );
+            } else {
+                eprintln!("Request failed: {e}");
+            }
+            return Ok(ExitCode::FAILURE);
+        }
+    };
+
+    if target.json {
+        let devices: Vec<_> = devices
+            .iter()
+            .map(|d| {
+                serde_json::json!({
+                    "id": d.id.to_string(),
+                    "name": d.device.name,
+                    "ip": d.device.ip,
+                    "gateway": d.gateway.to_string(),
+                    "protocols": d
+                        .device
+                        .protocols()
+                        .iter()
+                        .map(|p| p.display_name())
+                        .collect::<Vec<_>>(),
+                    "online": d.online,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&devices)?);
+    } else if devices.is_empty() {
+        println!("No probe devices registered");
+    } else {
+        for d in &devices {
+            let protocols: Vec<_> = d
+                .device
+                .protocols()
+                .iter()
+                .map(|p| p.display_name())
+                .collect();
+            println!(
+                "{:<20} {:<24} {:<16} {}",
+                d.id.to_string(),
+                d.display_name(),
+                d.device.ip,
+                protocols.join(",")
+            );
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 async fn service(
     target: TargetArgs,
-    device: u64,
+    device: ProbeId,
     protocol: ProbeType,
     action: ServiceAction,
 ) -> Result<ExitCode> {
@@ -99,7 +165,8 @@ async fn service(
         .context("no server connection")?;
 
     let response =
-        probe_service::request_once(conn, device, protocol, op, Duration::from_secs(60)).await;
+        probe_service::request_once(conn, device.body(), protocol, op, Duration::from_secs(60))
+            .await;
 
     match response {
         Ok(ProbeServiceResponse::Containers(containers)) => {

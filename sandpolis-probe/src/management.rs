@@ -252,10 +252,54 @@ mod client {
     pub fn delete_device(conn: Arc<InstanceConnection>, id: crate::ProbeId) {
         send_request(conn, DeviceMgmtRequest::Delete { id });
     }
+
+    /// A requester that hands each response to a caller-owned channel instead
+    /// of [`REGISTERED_DEVICES`]; this is what the CLI waits on. In its own
+    /// module because it must be named after the stream (the name is the wire
+    /// tag) and the list-folding requester already claims that name here.
+    mod once {
+        use super::*;
+
+        #[derive(Stream)]
+        pub struct DeviceMgmtRequester {
+            pub tx: tokio::sync::mpsc::UnboundedSender<DeviceMgmtResponse>,
+        }
+
+        impl StreamRequester for DeviceMgmtRequester {
+            type In = DeviceMgmtResponse;
+            type Out = DeviceMgmtRequest;
+
+            async fn on_message(&self, response: Self::In, _: Sender<Self::Out>) -> Result<()> {
+                let _ = self.tx.send(response);
+                Ok(())
+            }
+        }
+    }
+
+    /// Fetch the server's current device list once: subscribe, take the
+    /// snapshot the server answers with, and close the subscription.
+    pub async fn list_once(
+        conn: Arc<InstanceConnection>,
+        timeout: std::time::Duration,
+    ) -> Result<Vec<RegisteredDevice>> {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (id, stream_tx) = conn.register_stream(once::DeviceMgmtRequester { tx });
+        let payload = serde_cbor::to_vec(&DeviceMgmtRequest::Subscribe)?;
+        stream_tx.send(StreamMessage::local(id, payload)).await?;
+        let response = tokio::time::timeout(timeout, rx.recv()).await;
+        conn.close_stream(id);
+        match response
+            .map_err(|_| anyhow::anyhow!("timed out waiting for the server"))?
+            .ok_or_else(|| anyhow::anyhow!("stream closed without a response"))?
+        {
+            DeviceMgmtResponse::List(devices) => Ok(devices),
+            DeviceMgmtResponse::Error(e) => Err(anyhow::anyhow!(e)),
+        }
+    }
 }
 
 #[cfg(feature = "server")]
 pub use server::add_discovered;
 
 #[cfg(feature = "client")]
-pub use client::{DeviceMgmtRequester, delete_device, register_device, subscribe};
+pub use client::{DeviceMgmtRequester, delete_device, list_once, register_device, subscribe};
