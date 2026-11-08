@@ -1,6 +1,6 @@
-use crate::cve::CveSeverity;
 use serde::Deserialize;
 use serde::Serialize;
+use strum::Display;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 #[serde(default)]
@@ -46,4 +46,16 @@ impl Default for CveConfig {
                 .to_string(),
         }
     }
+}
+
+/// CVSS base severity, ordered so a threshold can be a simple comparison.
+#[derive(
+    Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Display,
+)]
+pub enum CveSeverity {
+    #[default]
+    Low,
+    Medium,
+    High,
+    Critical,
 }

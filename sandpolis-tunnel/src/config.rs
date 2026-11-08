@@ -6,7 +6,6 @@
 //! (`listener`), where it binds (`listen`), the endpoint that dials out
 //! (`terminator`), and the target it dials (`target`).
 
-use crate::{TunnelMode, TunnelProtocol};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
@@ -42,4 +41,23 @@ pub struct TunnelConfig {
 
     #[serde(default)]
     pub mode: TunnelMode,
+}
+
+/// Which transport a tunnel forwards.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum TunnelProtocol {
+    #[default]
+    Tcp,
+    Udp,
+}
+
+/// How a tunnel's data path is (or should be) carried.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum TunnelMode {
+    /// Bridged through one or more servers. Always works.
+    #[default]
+    Indirect,
+    /// Hole-punched peer-to-peer, falling back to indirect if that fails. Only
+    /// meaningful for a client <-> agent tunnel.
+    Direct,
 }

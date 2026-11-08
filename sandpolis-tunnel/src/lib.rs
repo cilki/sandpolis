@@ -48,15 +48,10 @@ pub mod client;
 #[cfg(all(feature = "client", not(target_os = "android")))]
 pub mod cli;
 
-sandpolis_instance::register_layer!("Tunnel", "Application-level tunnels");
+// Defined with the config that names them, so `sandpolis lsp` can index them.
+pub use config::{TunnelMode, TunnelProtocol};
 
-/// Which transport a tunnel forwards.
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum TunnelProtocol {
-    #[default]
-    Tcp,
-    Udp,
-}
+sandpolis_instance::register_layer!("Tunnel", "Application-level tunnels");
 
 impl std::fmt::Display for TunnelProtocol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -65,17 +60,6 @@ impl std::fmt::Display for TunnelProtocol {
             TunnelProtocol::Udp => "udp",
         })
     }
-}
-
-/// How a tunnel's data path is (or should be) carried.
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum TunnelMode {
-    /// Bridged through one or more servers. Always works.
-    #[default]
-    Indirect,
-    /// Hole-punched peer-to-peer, falling back to indirect if that fails. Only
-    /// meaningful for a client <-> agent tunnel.
-    Direct,
 }
 
 impl std::fmt::Display for TunnelMode {

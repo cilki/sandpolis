@@ -9,8 +9,6 @@ use native_db::ToKey;
 use native_model::Model;
 use sandpolis_instance::InstanceId;
 use sandpolis_macros::data;
-use serde::{Deserialize, Serialize};
-use strum::Display;
 
 #[cfg(feature = "server")]
 pub mod server;
@@ -18,17 +16,8 @@ pub mod server;
 #[cfg(feature = "server")]
 pub use server::CveService;
 
-/// CVSS base severity, ordered so a threshold can be a simple comparison.
-#[derive(
-    Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Display,
-)]
-pub enum CveSeverity {
-    #[default]
-    Low,
-    Medium,
-    High,
-    Critical,
-}
+// Defined with the config that names it, so `sandpolis lsp` can index it.
+pub use crate::config::CveSeverity;
 
 impl CveSeverity {
     /// The severity of an NVD record, preferring CVSS v3.1 over v3.0 over v2.

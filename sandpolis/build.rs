@@ -23,6 +23,9 @@ fn main() {
     // correctly at LSP serve time. Which of those types is the document root
     // depends on the file format being edited, so `sandpolis lsp` sets it from
     // its own flags rather than it being baked in here.
+    //
+    // Only `config.rs` files are read, so every type a config field names has
+    // to be defined in one (re-export it from wherever else it's used).
     let workspace_root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("..");
     println!(
         "cargo:rerun-if-changed={}",
@@ -80,6 +83,15 @@ fn main() {
             };
 
             let source = fs::read_to_string(entry.path()).expect("Failed to read config.rs source");
+
+            // A field type spelled `crate::…` means this member's crate, but the
+            // analyzer would read it as the `sandpolis` crate's. Name the crate
+            // the way its types were indexed instead.
+            let source = if crate_prefix == "crate" {
+                source
+            } else {
+                source.replace("crate::", &format!("{crate_prefix}::"))
+            };
             let _ = analyzer.add_source_with_prefix(&prefix, &source);
         }
     }
