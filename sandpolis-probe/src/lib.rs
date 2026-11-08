@@ -72,6 +72,27 @@ pub fn set_device_persist(
     DEVICE_PERSIST.set(f);
 }
 
+/// Look a registered device up by the body of its id, which is how the service
+/// and filesystem streams name one on the wire.
+///
+/// Ids are minted when the server loads its realm config, so one copied out of
+/// `probe list` before a restart no longer names anything; the error says so in
+/// the same `probe-<base32>` form the user typed.
+#[cfg(feature = "server")]
+pub(crate) fn registered_device(body: u64) -> anyhow::Result<RegisteredDevice> {
+    REGISTERED_DEVICES
+        .read()
+        .ok()
+        .and_then(|devices| devices.iter().find(|d| d.id.body() == body).cloned())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "device {} is not registered (ids change when the server restarts; \
+                 run `sandpolis probe list` for the current ones)",
+                ProbeId(body)
+            )
+        })
+}
+
 /// Persist the current device list if a hook is installed.
 pub fn persist_devices(devices: &[RegisteredDevice]) {
     DEVICE_PERSIST.persist(devices);
@@ -122,8 +143,6 @@ impl ProbeManager {
                 id: ProbeId::random(),
                 gateway,
                 device,
-                online: false,
-                status_message: None,
             })
             .collect();
 
@@ -288,12 +307,6 @@ pub struct RegisteredDevice {
 
     /// Name/address plus the per-protocol configuration.
     pub device: DeviceConfig,
-
-    /// Whether the device is currently online/reachable.
-    pub online: bool,
-
-    /// Last status message.
-    pub status_message: Option<String>,
 }
 
 impl RegisteredDevice {
@@ -522,6 +535,17 @@ mod tests {
             ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5)),
             ..Default::default()
         }
+    }
+
+    /// An unknown device is named the way `probe list` printed it and
+    /// `--device` took it, not by the raw body the stream carries.
+    #[cfg(feature = "server")]
+    #[test]
+    fn unregistered_device_is_named_by_its_probe_id() {
+        let id = ProbeId::random();
+        let error = registered_device(id.body()).unwrap_err().to_string();
+        assert!(error.contains(&id.to_string()), "{error}");
+        assert!(!error.contains(&id.body().to_string()), "{error}");
     }
 
     #[test]

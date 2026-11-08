@@ -85,8 +85,6 @@ mod server {
                     id: crate::ProbeId::random(),
                     gateway,
                     device,
-                    online: false,
-                    status_message: None,
                 });
                 added += 1;
             }
@@ -148,8 +146,6 @@ mod server {
                             id: crate::ProbeId::random(),
                             gateway,
                             device,
-                            online: false,
-                            status_message: None,
                         });
                         commit();
                     } else {
