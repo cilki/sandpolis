@@ -135,7 +135,7 @@ pub fn normalize(path: &std::path::Path) -> anyhow::Result<Vec<String>> {
 #[cfg(feature = "server")]
 mod server {
     use super::*;
-    use crate::{REGISTERED_DEVICES, RegisteredDevice};
+    use crate::registered_device as device;
     use anyhow::{Result, bail};
     use sandpolis_instance::network::{
         RegisterResponders, ResponderRegistration, StreamRegistry, StreamResponder,
@@ -219,15 +219,6 @@ mod server {
     /// outlive the one-shot streams that use them; a failed operation evicts its
     /// entry so the next request reconnects.
     static CONNECTIONS: LazyLock<Connections> = LazyLock::new(Default::default);
-
-    /// Look a registered device up by id.
-    fn device(device_id: u64) -> Result<RegisteredDevice> {
-        REGISTERED_DEVICES
-            .read()
-            .ok()
-            .and_then(|devices| devices.iter().find(|d| d.id.body() == device_id).cloned())
-            .ok_or_else(|| anyhow::anyhow!("device {device_id} is not registered"))
-    }
 
     /// Mount `protocol` on `device_id`, reusing an existing connection if one is
     /// already open.

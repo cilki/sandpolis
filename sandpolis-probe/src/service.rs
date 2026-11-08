@@ -100,7 +100,7 @@ pub enum ProbeServiceResponse {
 #[cfg(feature = "server")]
 mod server {
     use super::*;
-    use crate::{REGISTERED_DEVICES, RegisteredDevice};
+    use crate::registered_device as device;
     use anyhow::Result;
     use sandpolis_instance::network::{
         RegisterResponders, ResponderRegistration, StreamRegistry, StreamResponder,
@@ -116,15 +116,6 @@ mod server {
     /// next request reconnects.
     static DOCKER_CONNECTIONS: LazyLock<Mutex<HashMap<u64, crate::docker::DockerEngine>>> =
         LazyLock::new(Default::default);
-
-    /// Look a registered device up by id.
-    fn device(device_id: u64) -> Result<RegisteredDevice> {
-        REGISTERED_DEVICES
-            .read()
-            .ok()
-            .and_then(|devices| devices.iter().find(|d| d.id.body() == device_id).cloned())
-            .ok_or_else(|| anyhow::anyhow!("device {device_id} is not registered"))
-    }
 
     async fn docker_engine(device_id: u64) -> Result<crate::docker::DockerEngine> {
         if let Some(engine) = DOCKER_CONNECTIONS.lock().await.get(&device_id) {

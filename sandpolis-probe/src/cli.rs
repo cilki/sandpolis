@@ -120,7 +120,6 @@ async fn list(target: TargetArgs) -> Result<ExitCode> {
                         .iter()
                         .map(|p| p.display_name())
                         .collect::<Vec<_>>(),
-                    "online": d.online,
                 })
             })
             .collect();
