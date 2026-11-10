@@ -78,12 +78,36 @@ pub fn agents() -> Result<Vec<AgentRow>> {
         .map(|i| AgentRow {
             instance_id: i._instance_id,
             cluster_id: i.cluster_id.to_string(),
-            os: i.os_info.to_string(),
+            os: describe_os(&i.os_info),
             online: online.contains(&i._instance_id),
         })
         .collect();
     agents.sort_by_key(|a| a.instance_id);
     Ok(agents)
+}
+
+/// An agent's OS as one line: `os_info`'s own rendering, minus the bitness when
+/// the agent couldn't determine it.
+///
+/// `os_info` learns the bitness on Linux by running `getconf LONG_BIT`, which
+/// isn't on every PATH (a NixOS systemd service's, for one), so such an agent
+/// reports `Bitness::Unknown` and the stock `Display` would tack
+/// `[unknown bitness]` onto its row.
+fn describe_os(info: &os_info::Info) -> String {
+    let mut out = info.os_type().to_string();
+    if *info.version() != os_info::Version::Unknown {
+        out.push_str(&format!(" {}", info.version()));
+    }
+    if let Some(edition) = info.edition() {
+        out.push_str(&format!(" ({edition})"));
+    }
+    if let Some(codename) = info.codename() {
+        out.push_str(&format!(" ({codename})"));
+    }
+    if info.bitness() != os_info::Bitness::Unknown {
+        out.push_str(&format!(" [{}]", info.bitness()));
+    }
+    out
 }
 
 pub struct AgentListWidget {
@@ -327,6 +351,23 @@ mod tests {
         let expected = rows.iter().position(|r| r.instance_id.to_string() == b);
         state.set_agents(rows);
         assert_eq!(state.list_state.selected(), expected);
+    }
+
+    /// An agent that couldn't tell its bitness is described without the
+    /// `[unknown bitness]` placeholder, and nothing else about the line changes.
+    #[test]
+    fn os_omits_unknown_bitness() {
+        let info = os_info::Info::with_type(os_info::Type::NixOS);
+        assert_eq!(info.bitness(), os_info::Bitness::Unknown);
+        assert_eq!(info.to_string(), "NixOS [unknown bitness]");
+        assert_eq!(describe_os(&info), "NixOS");
+
+        let info = os_info::get();
+        let expected = info.to_string();
+        let expected = expected
+            .strip_suffix(" [unknown bitness]")
+            .unwrap_or(&expected);
+        assert_eq!(describe_os(&info), expected);
     }
 
     /// The first rows to arrive select the top one; losing every row clears the
