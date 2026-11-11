@@ -26,6 +26,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::Notify;
 use tokio::sync::mpsc::{Sender, UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
@@ -33,6 +34,8 @@ use tracing::{debug, warn};
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(3);
 /// How long an endpoint has to report it's ready before the attempt is abandoned.
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
+/// Longest wait between attempts at a tunnel that keeps failing.
+const MAX_RETRY_INTERVAL: Duration = Duration::from_secs(300);
 /// Minimum time between traffic-stat writes, so a busy tunnel doesn't replicate
 /// thousands of revisions.
 const PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
@@ -82,7 +85,24 @@ struct Managed {
     endpoints: Option<(InstanceId, InstanceId)>,
     row: Arc<Resident<TunnelData>>,
     cancel: Option<CancellationToken>,
-    handle: Option<tokio::task::JoinHandle<()>>,
+    /// The running bridge; resolves to whether it ended in failure.
+    handle: Option<tokio::task::JoinHandle<bool>>,
+    /// Consecutive failed attempts, which space out the retries.
+    failures: u32,
+    /// Don't attempt the tunnel again before this.
+    retry_at: Option<Instant>,
+}
+
+/// How long to wait before attempting a tunnel again after its `failures`th
+/// consecutive failure: doubling from the reconcile interval, capped.
+///
+/// A failure like a listen address already in use won't clear by itself
+/// within seconds, and every attempt costs both endpoints a stream and the
+/// row a replicated revision.
+fn retry_delay(failures: u32) -> Duration {
+    RECONCILE_INTERVAL
+        .saturating_mul(1 << failures.saturating_sub(1).min(16))
+        .min(MAX_RETRY_INTERVAL)
 }
 
 async fn orchestrate() {
@@ -136,6 +156,8 @@ async fn orchestrate() {
             row,
             cancel: None,
             handle: None,
+            failures: 0,
+            retry_at: None,
         });
     }
 
@@ -154,13 +176,19 @@ async fn orchestrate() {
             // Clear a bridge that ended (an endpoint dropped), cancelling its
             // token so the surviving endpoint's forwarder/worker tasks and
             // streams are torn down rather than left running.
-            if m.handle.as_ref().is_some_and(|h| h.is_finished()) {
+            if let Some(handle) = m.handle.take_if(|h| h.is_finished()) {
                 if let Some(cancel) = m.cancel.take() {
                     cancel.cancel();
                 }
-                m.handle = None;
+                if handle.await.unwrap_or(true) {
+                    m.failures += 1;
+                    m.retry_at = Some(Instant::now() + retry_delay(m.failures));
+                } else {
+                    m.failures = 0;
+                    m.retry_at = None;
+                }
             }
-            if m.handle.is_some() {
+            if m.handle.is_some() || m.retry_at.is_some_and(|at| Instant::now() < at) {
                 continue;
             }
             if !endpoint_reachable(ctx, listener_id) || !endpoint_reachable(ctx, terminator_id) {
@@ -211,17 +239,10 @@ async fn orchestrate() {
                 },
                 TunnelMode::Indirect => TunnelMode::Indirect,
             };
-            let _ = m.row.update(|d| {
-                d.state = TunnelState::Active;
-                d.effective_mode = effective;
-                d.error = None;
-                Ok(())
-            });
-
             let row = m.row.clone();
             let bridge_cancel = cancel.clone();
             m.handle = Some(tokio::spawn(async move {
-                run_bridge(listener, terminator, row, bridge_cancel).await;
+                run_bridge(listener, terminator, row, effective, bridge_cancel).await
             }));
             m.cancel = Some(cancel);
         }
@@ -333,18 +354,29 @@ struct ConnState {
 }
 
 /// Copy bytes between the two endpoints until one goes away or `cancel` fires.
+///
+/// The row only turns `Active` once both endpoints report they're ready, so a
+/// tunnel whose listener can't bind stays `Failed` rather than flickering
+/// through `Active` on every attempt. Returns whether the bridge failed.
 async fn run_bridge(
     mut listener: Endpoint,
     mut terminator: Endpoint,
     row: Arc<Resident<TunnelData>>,
+    effective: TunnelMode,
     cancel: CancellationToken,
-) {
+) -> bool {
     if let Err(e) = wait_ready(&mut listener.from, &cancel).await {
         return finish(&row, Some(format!("listener: {e}")));
     }
     if let Err(e) = wait_ready(&mut terminator.from, &cancel).await {
         return finish(&row, Some(format!("terminator: {e}")));
     }
+    let _ = row.update(|d| {
+        d.state = TunnelState::Active;
+        d.effective_mode = effective;
+        d.error = None;
+        Ok(())
+    });
 
     let mut conns: HashMap<u64, ConnState> = HashMap::new();
     let (mut rx_bytes, mut tx_bytes) = {
@@ -357,7 +389,7 @@ async fn run_bridge(
 
     loop {
         tokio::select! {
-            _ = cancel.cancelled() => return,
+            _ = cancel.cancelled() => return false,
 
             // Listener -> server: accepted connections and upload bytes.
             message = listener.from.recv() => match message {
@@ -441,18 +473,31 @@ async fn run_bridge(
 }
 
 /// Record a terminal state on a tunnel row: `Failed` with the message, or
-/// `Pending` (endpoint lost) so the orchestrator retries.
-fn finish(row: &Resident<TunnelData>, error: Option<String>) {
-    let _ = row.update(|d| {
-        d.state = if error.is_some() {
-            TunnelState::Failed
-        } else {
-            TunnelState::Pending
-        };
-        d.active_connections = 0;
-        d.error = error.clone();
-        Ok(())
-    });
+/// `Pending` (endpoint lost) so the orchestrator retries. Returns whether the
+/// bridge failed.
+///
+/// A row already in that state is left alone, so a retry that fails the same
+/// way again doesn't replicate a new revision to every client.
+fn finish(row: &Resident<TunnelData>, error: Option<String>) -> bool {
+    let failed = error.is_some();
+    let state = if failed {
+        TunnelState::Failed
+    } else {
+        TunnelState::Pending
+    };
+    let unchanged = {
+        let d = row.read();
+        d.state == state && d.error == error && d.active_connections == 0
+    };
+    if !unchanged {
+        let _ = row.update(|d| {
+            d.state = state;
+            d.active_connections = 0;
+            d.error = error.clone();
+            Ok(())
+        });
+    }
+    failed
 }
 
 /// Wait for an endpoint's `Ready` (or a fatal `Error`).
@@ -473,5 +518,101 @@ async fn wait_ready(
                 None => return Err("disconnected".into()),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sandpolis_instance::database::DatabaseManager;
+    use sandpolis_instance::realm::RealmName;
+    use sandpolis_instance::test_db;
+
+    /// An endpoint driven by the test: responses go in through the returned
+    /// sender, requests toward it are dropped.
+    fn endpoint() -> (Endpoint, UnboundedSender<TunnelStreamResponse>) {
+        let (to, _) = unbounded_channel();
+        let (responses, from) = unbounded_channel();
+        (Endpoint { to, from }, responses)
+    }
+
+    fn row() -> Result<Arc<Resident<TunnelData>>> {
+        let db: DatabaseManager = test_db!(TunnelData);
+        let rows: ResidentVec<TunnelData> = db.realm(RealmName::default())?.resident_vec(())?;
+        Ok(Arc::new(rows.push(TunnelData {
+            name: "busy".into(),
+            ..Default::default()
+        })?))
+    }
+
+    #[test]
+    fn retries_back_off_to_a_cap() {
+        assert_eq!(retry_delay(1), RECONCILE_INTERVAL);
+        assert_eq!(retry_delay(2), RECONCILE_INTERVAL * 2);
+        assert_eq!(retry_delay(3), RECONCILE_INTERVAL * 4);
+        assert_eq!(retry_delay(10), MAX_RETRY_INTERVAL);
+        assert_eq!(retry_delay(u32::MAX), MAX_RETRY_INTERVAL);
+    }
+
+    /// A listener that can't bind fails the tunnel without it ever showing
+    /// `Active`, and failing the same way again writes nothing new.
+    #[tokio::test]
+    async fn failing_listener_never_shows_active() -> Result<()> {
+        let row = row()?;
+        let initial = row.read().revision();
+
+        for _ in 0..3 {
+            let (listener, responses) = endpoint();
+            let (terminator, _ready) = endpoint();
+            responses.send(TunnelStreamResponse::Error {
+                message: "Address already in use".into(),
+            })?;
+            let failed = run_bridge(
+                listener,
+                terminator,
+                row.clone(),
+                TunnelMode::Indirect,
+                CancellationToken::new(),
+            )
+            .await;
+            assert!(failed);
+        }
+
+        let data = row.read();
+        assert_eq!(data.state, TunnelState::Failed);
+        assert_eq!(data.error.as_deref(), Some("listener: Address already in use"));
+        // Pending -> Failed once; no detour through Active, no rewrite on retry.
+        assert_eq!(data.revision(), initial + 1);
+        Ok(())
+    }
+
+    /// Once both endpoints are ready the tunnel is `Active`; losing one puts it
+    /// back to `Pending` without counting as a failure.
+    #[tokio::test]
+    async fn ready_endpoints_activate_the_tunnel() -> Result<()> {
+        let row = row()?;
+        let (listener, listener_responses) = endpoint();
+        let (terminator, terminator_responses) = endpoint();
+        listener_responses.send(TunnelStreamResponse::Ready)?;
+        terminator_responses.send(TunnelStreamResponse::Ready)?;
+
+        let bridge = tokio::spawn(run_bridge(
+            listener,
+            terminator,
+            row.clone(),
+            TunnelMode::Indirect,
+            CancellationToken::new(),
+        ));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while row.read().state != TunnelState::Active {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+
+        drop(listener_responses);
+        assert!(!bridge.await?);
+        assert_eq!(row.read().state, TunnelState::Pending);
+        Ok(())
     }
 }
