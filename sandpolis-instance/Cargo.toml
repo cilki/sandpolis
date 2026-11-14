@@ -32,7 +32,7 @@ rcgen = { version = "0.14.10", optional = true, features = [
 ] }
 reqwest = { workspace = true, optional = true }
 ron = { workspace = true }
-rustls-pki-types = { version = "1.15.1" }
+rustls-pki-types = { version = "1.16.0" }
 rustls = { workspace = true }
 sandpolis-macros = { path = "../sandpolis-macros", version = "0.0.1" }
 serde_cbor = { workspace = true }
@@ -57,7 +57,7 @@ x509-parser = { version = "0.18.1" }
 # together by the `client` feature — only a client shows notifications to a
 # person. Same arrangement as `sandpolis-desktop`'s capture/input backends.
 [target.'cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))'.dependencies]
-notify-rust = { version = "4.18", optional = true }
+notify-rust = { version = "4.19", optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = { version = "0.22.4", optional = true }

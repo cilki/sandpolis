@@ -322,8 +322,8 @@ impl UserManager {
                     jwt_keys.insert(
                         realm.clone(),
                         (
-                            jsonwebtoken::EncodingKey::from_secret(&secret.value),
-                            jsonwebtoken::DecodingKey::from_secret(&secret.value),
+                            jsonwebtoken::EncodingKey::from_secret(&secret.value)?,
+                            jsonwebtoken::DecodingKey::from_secret(&secret.value)?,
                         ),
                     );
                 }

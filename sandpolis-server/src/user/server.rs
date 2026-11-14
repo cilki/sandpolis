@@ -743,13 +743,13 @@ mod test_token {
         let token = jsonwebtoken::encode(
             &jsonwebtoken::Header::default(),
             &claims,
-            &jsonwebtoken::EncodingKey::from_secret(&secret.value),
+            &jsonwebtoken::EncodingKey::from_secret(&secret.value).unwrap(),
         )
         .unwrap();
 
         let decoded = decode::<Claims>(
             &token,
-            &jsonwebtoken::DecodingKey::from_secret(&secret.value),
+            &jsonwebtoken::DecodingKey::from_secret(&secret.value).unwrap(),
             &Validation::default(),
         )
         .unwrap()
@@ -762,7 +762,7 @@ mod test_token {
         assert!(
             decode::<Claims>(
                 &token,
-                &jsonwebtoken::DecodingKey::from_secret(&other.value),
+                &jsonwebtoken::DecodingKey::from_secret(&other.value).unwrap(),
                 &Validation::default(),
             )
             .is_err()
