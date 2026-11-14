@@ -15,7 +15,7 @@
 
 use crate::ownership::{OwnershipRequest, OwnershipRequester, attached_instances};
 use crate::{ServerManager, ServerStratum};
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use sandpolis_instance::InstanceId;
 use sandpolis_instance::InstanceManager;
 use sandpolis_instance::database::sync::SyncFilter;
@@ -162,6 +162,23 @@ pub async fn enroll(server: &ServerManager, instance: &InstanceManager) -> Resul
     };
 
     let realm = global.realm.clone();
+
+    // A local stratum server never holds the realm CA's private key: the global
+    // stratum server is the realm's only trust root, and enrollment strips the
+    // key before the CA comes down. Finding it here means this database was
+    // created by the global stratum server — typically its data directory
+    // started with `--realm` (or a stray `$S7S_REALM`). The shortcut below
+    // would take the GS's own certificates for an enrollment and this server
+    // would then dial the upstream the realm cert names, which is itself.
+    if server.realms.holds_ca_key(realm.clone()) {
+        bail!(
+            "The database holds the private key of realm {realm}'s CA, so it belongs to \
+             the global stratum server and can't be run in the local stratum. Drop \
+             --realm (or unset $S7S_REALM) to keep running it as the global stratum \
+             server, or give the local stratum server a data directory of its own."
+        );
+    }
+
     if server
         .realms
         .has_server_cert(realm.clone(), instance.instance_id)
@@ -260,29 +277,47 @@ pub async fn maintain_upstream(
     info!(url = %global, "Local stratum server connecting to its global stratum server");
 
     let mut retry = upstream_retry();
+    let mut failures = 0;
     loop {
         // Every path through this loop backs off before trying again. A link
         // that fails at any stage — dial, upgrade, or after being established —
         // must not turn into a tight reconnect loop against the global stratum
         // server, which is likely already struggling if we got here.
-        let wait = match attempt_link(&server, &network, &instance, &global).await {
+        let wait = match attempt_link(&server, &network, &instance, &global, failures).await {
             // The link was up long enough to count as healthy, so treat the next
             // outage as a fresh one and reconnect promptly.
             Ok(uptime) if uptime >= STABLE_AFTER => {
                 warn!(url = %global, uptime = ?uptime, "Upstream link closed, reconnecting");
                 retry = upstream_retry();
+                failures = 0;
                 retry.next().unwrap()
             }
             // Established but immediately dropped: keep backing off, otherwise a
             // server that accepts and then rejects us produces a hot loop.
             Ok(uptime) => {
                 let wait = retry.next().unwrap();
+                failures = 0;
                 warn!(url = %global, uptime = ?uptime, waiting = ?wait, "Upstream link dropped quickly; backing off");
                 wait
             }
+            // An edge server nobody is watching interactively gets one log line
+            // and nothing else, so this has to be loud: at `debug` a local
+            // stratum server that could never reach its global stratum server
+            // — or that it refused — said nothing at all after "connecting".
+            // Warning on every attempt is affordable because the backoff caps
+            // at a minute, the same trade the agent makes on its own loop. The
+            // whole chain is printed because the reason — "Connection refused",
+            // the GS's refusal message — is always the innermost cause.
             Err(e) => {
                 let wait = retry.next().unwrap();
-                debug!(error = %e, url = %global, waiting = ?wait, "Upstream connection attempt failed");
+                failures += 1;
+                warn!(
+                    error = format!("{e:#}"),
+                    url = %global,
+                    waiting = ?wait,
+                    failures,
+                    "Cannot reach the global stratum server; retrying"
+                );
                 wait
             }
         };
@@ -294,11 +329,16 @@ pub async fn maintain_upstream(
 /// One attempt at establishing and holding the upstream link.
 ///
 /// Returns how long the link stayed up, or an error if it never came up.
+///
+/// `failures` is how many consecutive attempts failed before this one, which
+/// is the recovery half of the story the warnings tell: it says the link is up
+/// *and* how long it spent getting there.
 async fn attempt_link(
     server: &ServerManager,
     network: &NetworkManager,
     instance: &InstanceManager,
     global: &crate::ServerUrl,
+    failures: u32,
 ) -> Result<Duration> {
     let upstream = Arc::new(server.connect(global.clone()).await?);
     server.outbound.write().unwrap().push(upstream.clone());
@@ -310,7 +350,7 @@ async fn attempt_link(
     };
 
     let link = upstream.open_session(network, instance).await?;
-    info!(url = %global, "Connected to global stratum server");
+    info!(url = %global, failures, "Connected to global stratum server");
 
     let established = tokio::time::Instant::now();
     if let Err(e) = run_link(server, &link, network).await {
@@ -448,6 +488,121 @@ async fn run_link(
     });
 
     Ok(())
+}
+
+#[cfg(test)]
+mod test_enroll {
+    use super::*;
+    use crate::banner::ServerBannerData;
+    use crate::ownership::OwnershipData;
+    use sandpolis_instance::database::{DatabaseManager, ScopeTable};
+    use sandpolis_instance::domain::DomainData;
+    use sandpolis_instance::network::liveness::LivenessData;
+    use sandpolis_instance::network::{ConnectionData, NetworkManagerData};
+    use sandpolis_instance::notification::NotificationData;
+    use sandpolis_instance::realm::{RealmCert, RealmData, RealmManager};
+    use sandpolis_instance::{ClusterId, InstanceIdentityData, InstanceManagerData, InstanceType};
+
+    /// A local stratum server's database: scoped write authority, like the
+    /// real one.
+    fn database() -> Result<DatabaseManager> {
+        let table = Arc::new(ScopeTable::default());
+        Ok(sandpolis_instance::test_scoped_db!(
+            table,
+            InstanceIdentityData,
+            InstanceManagerData,
+            DomainData,
+            NotificationData,
+            NetworkManagerData,
+            ConnectionData,
+            LivenessData,
+            ServerBannerData,
+            OwnershipData,
+            RealmData,
+            RealmCert,
+        ))
+    }
+
+    /// The state `enroll` consults on a server told to run in the local stratum
+    /// under the realm cert `endpoint`, exactly as `sandpolis server --realm`
+    /// builds it.
+    async fn local_server(
+        db: DatabaseManager,
+        endpoint: RealmCert,
+    ) -> Result<(ServerManager, InstanceManager)> {
+        let instance = InstanceManager::new(db.clone(), InstanceType::Server).await?;
+        let network = NetworkManager::new(db.clone()).await?;
+        let stratum = ServerStratum::Local {
+            global: endpoint.url()?,
+        };
+        let realms = RealmManager::for_endpoint(vec![endpoint], db.clone())?;
+        let server = ServerManager::new(db, network, realms, stratum, InstanceType::Server).await?;
+        Ok((server, instance))
+    }
+
+    fn realm_ca() -> Result<(crate::ServerUrl, RealmCert)> {
+        let url: crate::ServerUrl = "gs.example.com:8768/default".parse()?;
+        let ca = RealmCert::new_cluster(ClusterId::default(), url.realm.clone())?;
+        Ok((url, ca))
+    }
+
+    /// A database the global stratum server created looks enrolled — it holds
+    /// the realm CA and this instance's own server certificate — but the CA
+    /// still has its private key, which no local stratum server ever gets.
+    /// Taking that for an enrollment would have this server present the GS's
+    /// certificates and dial the upstream the realm cert names: itself. So it
+    /// is refused outright, before anything is dialed.
+    #[tokio::test]
+    async fn a_global_stratum_database_is_refused() -> Result<()> {
+        let (url, ca) = realm_ca()?;
+        let db = database()?;
+        let (server, instance) = local_server(db.clone(), ca.endpoint_cert(&url)?).await?;
+
+        // What `RealmManager::new` leaves behind on the global stratum server.
+        let realm = db.realm(RealmName::default())?;
+        let rw = realm.local_write()?;
+        rw.insert(ca.clone())?;
+        rw.insert(ca.server_cert(instance.instance_id.try_into()?)?)?;
+        rw.commit()?;
+        assert!(
+            server
+                .realms
+                .has_server_cert(RealmName::default(), instance.instance_id),
+            "the database passes for an enrolled one"
+        );
+
+        let error = enroll(&server, &instance)
+            .await
+            .expect_err("a global stratum server's database can't be run in the local stratum")
+            .to_string();
+        assert!(error.contains("global stratum server"), "{error}");
+        assert!(error.contains("--realm"), "{error}");
+        Ok(())
+    }
+
+    /// A server the global stratum server actually enrolled holds the CA
+    /// without its key, and passes straight through on the next start without
+    /// dialing anything.
+    #[tokio::test]
+    async fn an_enrolled_server_is_not_refused() -> Result<()> {
+        let (url, ca) = realm_ca()?;
+        let db = database()?;
+        let (server, instance) = local_server(db, ca.endpoint_cert(&url)?).await?;
+
+        let issued = ca.server_cert(instance.instance_id.try_into()?)?;
+        server.realms.install_enrollment(
+            RealmName::default(),
+            ca.cert.clone(),
+            issued.cert,
+            issued.key.expect("issued cert carries a key"),
+            instance.instance_id,
+        )?;
+
+        // `gs.example.com` doesn't resolve, so returning `Ok` at all proves the
+        // shortcut was taken rather than the network.
+        enroll(&server, &instance).await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

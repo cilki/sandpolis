@@ -528,6 +528,34 @@ impl RealmManager {
         has_ca && has_cert
     }
 
+    /// Whether this instance holds the private key of `realm`'s CA.
+    ///
+    /// Only the global stratum server ever does: the key is what makes it the
+    /// realm's trust root, and enrollment strips it before the CA reaches a
+    /// local stratum server (see
+    /// [`install_enrollment`](Self::install_enrollment)). So on a server told
+    /// to run in the local stratum, a key here means its database was created
+    /// by the global stratum server — not something to enroll over.
+    #[cfg(feature = "server")]
+    pub fn holds_ca_key(&self, realm: RealmName) -> bool {
+        let Ok(db) = self.database.realm(realm) else {
+            return false;
+        };
+        let Ok(r) = db.r_transaction() else {
+            return false;
+        };
+
+        let Ok(certs) = (|| -> Result<Vec<RealmCert>> {
+            Ok(r.scan().primary()?.all()?.collect::<Result<Vec<_>, _>>()?)
+        })() else {
+            return false;
+        };
+
+        certs
+            .iter()
+            .any(|c| c.cert_type == RealmCertType::Cluster && c.key.is_some())
+    }
+
     /// Store the realm CA and server certificate issued by the global stratum
     /// server.
     ///
@@ -975,6 +1003,10 @@ mod test_enrollment {
         )?;
 
         assert!(realms.has_server_cert(RealmName::default(), id));
+        assert!(
+            !realms.holds_ca_key(RealmName::default()),
+            "an enrolled local stratum server verifies with the CA but never holds its key"
+        );
 
         let db = realms.database.realm(RealmName::default())?;
         let r = db.r_transaction()?;
@@ -997,6 +1029,33 @@ mod test_enrollment {
             stored[0].issuer().is_err(),
             "without the key, a local stratum server cannot issue certificates"
         );
+        Ok(())
+    }
+
+    /// A database the global stratum server created carries the realm CA
+    /// *with* its key (that is what lets it issue), and looks fully enrolled
+    /// because the GS mints its own server certificate too. The key is the
+    /// one thing that tells it apart from a local stratum server's database,
+    /// which is how `enroll` refuses to run one as the other.
+    #[tokio::test]
+    async fn a_global_stratum_database_is_recognized_by_its_ca_key() -> Result<()> {
+        let server_id = ServerId::random();
+        let id = InstanceId::from(server_id);
+        let realms = manager(replica()?);
+
+        // What `RealmManager::new` stores for a realm it is authoritative over.
+        let ca = RealmCert::new_cluster(crate::ClusterId::default(), RealmName::default())?;
+        let db = realms.database.realm(RealmName::default())?;
+        let rw = db.local_write()?;
+        rw.insert(ca.clone())?;
+        rw.insert(ca.server_cert(server_id)?)?;
+        rw.commit()?;
+
+        assert!(realms.has_server_cert(RealmName::default(), id));
+        assert!(realms.holds_ca_key(RealmName::default()));
+
+        // A realm this instance knows nothing about holds no key either way.
+        assert!(!realms.holds_ca_key("unknown".parse()?));
         Ok(())
     }
 
