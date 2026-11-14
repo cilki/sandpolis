@@ -17,9 +17,8 @@ pub struct ProbeManagerConfig {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(default)]
 pub struct ScanConfig {
-    /// Whether the discovery service runs at all. Off by default: it sends ARP
-    /// traffic and opens TCP connections across the local network, which not
-    /// every deployment wants.
+    /// Whether the discovery service runs. Disable if you don't want the server
+    /// sending ARP + port scans.
     pub enabled: bool,
 
     /// IPv4 CIDR ranges to scan (e.g. `"10.0.0.0/24"`). When empty, the ranges
@@ -45,7 +44,7 @@ pub struct ScanConfig {
 impl Default for ScanConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             networks: Vec::new(),
             interval: 15 * 60,
             arp_timeout_ms: 500,
