@@ -2,7 +2,7 @@ use crate::ProbeId;
 use crate::ProbeManager;
 use crate::ProbeType;
 use crate::service::{ProbeServiceOp, ProbeServiceResponse, client as probe_service};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::{Subcommand, ValueEnum};
 use sandpolis_client::cli::TargetArgs;
 use std::process::ExitCode;
@@ -86,9 +86,7 @@ pub async fn dispatch(
 }
 
 async fn list(target: TargetArgs) -> Result<ExitCode> {
-    let conn = sandpolis_client::sync::wait_for_connection(Duration::from_secs(10))
-        .await
-        .context("no server connection")?;
+    let conn = sandpolis_client::sync::require_connection(Duration::from_secs(10)).await?;
 
     let devices = match crate::management::list_once(conn, Duration::from_secs(10)).await {
         Ok(devices) => devices,
@@ -159,9 +157,7 @@ async fn service(
         ServiceAction::Restart { id } => ProbeServiceOp::Restart { id },
     };
 
-    let conn = sandpolis_client::sync::wait_for_connection(Duration::from_secs(10))
-        .await
-        .context("no server connection")?;
+    let conn = sandpolis_client::sync::require_connection(Duration::from_secs(10)).await?;
 
     let response =
         probe_service::request_once(conn, device.body(), protocol, op, Duration::from_secs(60))

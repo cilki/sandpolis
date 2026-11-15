@@ -1,6 +1,6 @@
 use crate::client;
 use crate::streams::{SnapshotMgmtRequest, SnapshotMgmtResponse};
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use clap::Subcommand;
 use sandpolis_client::cli::TargetArgs;
 use std::process::ExitCode;
@@ -106,9 +106,7 @@ pub async fn dispatch(action: Option<SnapshotCommand>, target: TargetArgs) -> Re
 }
 
 async fn list(target: TargetArgs, partition: Option<String>) -> Result<ExitCode> {
-    sandpolis_client::sync::wait_for_connection(Duration::from_secs(30))
-        .await
-        .context("No server connection")?;
+    sandpolis_client::sync::require_connection(Duration::from_secs(30)).await?;
 
     match target.instance {
         Some(instance) => client::subscribe(instance),
@@ -161,9 +159,7 @@ async fn operate(
         bail!("--instance is required");
     };
 
-    sandpolis_client::sync::wait_for_connection(Duration::from_secs(30))
-        .await
-        .context("No server connection")?;
+    sandpolis_client::sync::require_connection(Duration::from_secs(30)).await?;
 
     let mut rx = client::request(request(instance));
     let deadline = tokio::time::Instant::now() + timeout;

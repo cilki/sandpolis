@@ -4,7 +4,7 @@
 //! tunnels the server is bridging and their live traffic counters.
 
 use crate::TunnelData;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Subcommand;
 use sandpolis_client::cli::TargetArgs;
 use std::process::ExitCode;
@@ -33,9 +33,7 @@ pub async fn dispatch(action: Option<TunnelCommand>, target: TargetArgs) -> Resu
 }
 
 async fn list(target: TargetArgs) -> Result<ExitCode> {
-    sandpolis_client::sync::wait_for_connection(Duration::from_secs(30))
-        .await
-        .context("No server connection")?;
+    sandpolis_client::sync::require_connection(Duration::from_secs(30)).await?;
 
     crate::client::subscribe();
     // Give the opening sync snapshot a moment to replicate down.

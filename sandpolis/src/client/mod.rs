@@ -183,6 +183,7 @@ pub fn spawn_client_sync(state: InstanceState) {
                 match connection.open_session(&network, &instance).await {
                     Ok(ic) => {
                         tracing::info!("Established sync session to server");
+                        sandpolis_client::sync::clear_connect_failure();
                         // Register every server for routing; the first also becomes
                         // the primary connection backing `sync::connection()`.
                         sandpolis_client::sync::register_connection(
@@ -226,6 +227,7 @@ pub fn spawn_client_sync(state: InstanceState) {
                     }
                     Err(e) => {
                         tracing::info!(error = %e, "Failed to open sync session");
+                        sandpolis_client::sync::record_connect_failure(&connection.url, &e);
                     }
                 }
             }
@@ -290,8 +292,11 @@ pub fn spawn_server_connection(state: InstanceState, url: sandpolis_server::Serv
                     tracing::info!(%url, "Connected to server");
                     return;
                 }
+                // The reason is kept for whichever subcommand ends up waiting
+                // on this connection; at `debug`, in a log file, nobody sees it.
                 Err(e) => {
                     tracing::debug!(error = %e, %url, "Server not ready yet, retrying in 2s");
+                    sandpolis_client::sync::record_connect_failure(&url, &e);
                     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 }
             }

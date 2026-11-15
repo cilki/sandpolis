@@ -1060,9 +1060,8 @@ mod client {
         };
         let auth = deploy_form::read_auth(resolved.key_path.as_deref(), &password)?;
 
-        let connection = sandpolis_client::sync::wait_for_connection(Duration::from_secs(30))
-            .await
-            .context("no server connection")?;
+        let connection =
+            sandpolis_client::sync::require_connection(Duration::from_secs(30)).await?;
         let server = sandpolis_client::sync::primary_server_url()
             .context("the server connection has no URL yet")?;
 
@@ -1220,12 +1219,7 @@ mod client {
         use std::time::Duration;
 
         info!("list_agents_json: waiting for server connection (up to 30s)");
-        if sandpolis_client::sync::wait_for_connection(Duration::from_secs(30))
-            .await
-            .is_none()
-        {
-            bail!("no server connection");
-        }
+        sandpolis_client::sync::require_connection(Duration::from_secs(30)).await?;
         info!("list_agents_json: connection established, subscribing");
 
         // Subscribe only after the connection is up so the call isn't a no-op.

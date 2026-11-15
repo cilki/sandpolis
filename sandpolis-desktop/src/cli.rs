@@ -2,7 +2,7 @@ use crate::DesktopManager;
 use crate::screenshot::{
     DesktopScreenshotRequest, DesktopScreenshotRequester, DesktopScreenshotResult,
 };
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use clap::Subcommand;
 use sandpolis_client::cli::TargetArgs;
 use serde_json::json;
@@ -63,9 +63,7 @@ async fn screenshot(
         bail!("--instance is required for screenshot");
     };
 
-    let conn = sandpolis_client::sync::wait_for_connection(Duration::from_secs(10))
-        .await
-        .context("no server connection")?;
+    let conn = sandpolis_client::sync::require_connection(Duration::from_secs(10)).await?;
 
     let (requester, mut rx) = DesktopScreenshotRequester::channel();
     let (id, _tx) = conn

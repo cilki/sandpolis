@@ -154,12 +154,9 @@ impl AgentListWidget {
 /// Keep the widget's rows in step with the client database until the widget
 /// is dropped.
 async fn refresh(state: std::sync::Weak<RwLock<AgentListWidgetState>>) {
-    if sandpolis_client::sync::wait_for_connection(CONNECT_TIMEOUT)
-        .await
-        .is_none()
-    {
+    if let Err(e) = sandpolis_client::sync::require_connection(CONNECT_TIMEOUT).await {
         if let Some(state) = state.upgrade() {
-            state.write().unwrap().status = Status::Failed("No server connection".to_string());
+            state.write().unwrap().status = Status::Failed(format!("{e:#}"));
         }
         return;
     }

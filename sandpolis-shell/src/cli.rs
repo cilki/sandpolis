@@ -2,7 +2,7 @@ use crate::ShellManager;
 use crate::session::{
     ShellEvent, ShellSessionStreamRequest, ShellSessionStreamRequester, spawn_shell_stream,
 };
-use anyhow::{Result, bail};
+use anyhow::Result;
 use sandpolis_client::cli::TargetArgs;
 use sandpolis_instance::InstanceId;
 use std::collections::HashMap;
@@ -60,10 +60,7 @@ impl Drop for RawModeGuard {
 /// propagated as a resize. Ends when the remote shell exits, adopting its exit
 /// code.
 async fn run_raw_session(instance: InstanceId) -> Result<ExitCode> {
-    let Some(conn) = sandpolis_client::sync::wait_for_connection(Duration::from_secs(10)).await
-    else {
-        bail!("No server connection");
-    };
+    let conn = sandpolis_client::sync::require_connection(Duration::from_secs(10)).await?;
 
     // Match the remote PTY to the local terminal from the start
     let (cols, rows) = crossterm::terminal::size().unwrap_or((0, 0));

@@ -269,6 +269,46 @@ pub async fn wait_for_connection(timeout: std::time::Duration) -> Option<Arc<Ins
     }
 }
 
+/// Why the most recent attempt to reach a server failed, while none is up.
+///
+/// The connection comes up in a background task whose failures go to the log,
+/// and a subcommand's log is a file the user isn't reading. This is how the
+/// reason gets back to the command that waited for the connection and gave
+/// up, so "no server connection" can say "connection refused" or "certificate
+/// has expired" instead of leaving the user to guess.
+static CONNECT_FAILURE: RwLock<Option<String>> = RwLock::new(None);
+
+/// Record that reaching `url` failed with `error`, replacing any earlier reason.
+/// The error is rendered with every cause under it, since the one that matters
+/// — "Connection refused" — is always the innermost.
+pub fn record_connect_failure(url: &ServerUrl, error: &anyhow::Error) {
+    *CONNECT_FAILURE.write().unwrap() = Some(format!("{url}: {error:#}"));
+}
+
+/// Forget the recorded failure; called when a connection comes up.
+pub fn clear_connect_failure() {
+    *CONNECT_FAILURE.write().unwrap() = None;
+}
+
+/// The error a command reports when it waited for a server connection that
+/// never came, naming the last reason an attempt failed when one is known.
+pub fn no_connection_error() -> anyhow::Error {
+    match CONNECT_FAILURE.read().unwrap().as_deref() {
+        Some(reason) => anyhow::anyhow!("no server connection: {reason}"),
+        None => anyhow::anyhow!("no server connection"),
+    }
+}
+
+/// [`wait_for_connection`] for commands that can't go on without one: the
+/// connection, or an error that says why there isn't one.
+pub async fn require_connection(
+    timeout: std::time::Duration,
+) -> anyhow::Result<Arc<InstanceConnection>> {
+    wait_for_connection(timeout)
+        .await
+        .ok_or_else(no_connection_error)
+}
+
 /// Subscribe to a model's records (optionally scoped to one instance). Idempotent
 /// per `(model_id, instance)`.
 pub fn subscribe(model_id: u32, instance: Option<InstanceId>) {
@@ -360,5 +400,33 @@ impl SyncHandle {
                 let _ = connection.close_sync(id, &tx).await;
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The reason the last attempt failed is what the waiting command reports,
+    /// with every cause spelled out; a connection coming up forgets it.
+    #[test]
+    fn no_connection_error_names_the_last_failure() {
+        clear_connect_failure();
+        assert_eq!(no_connection_error().to_string(), "no server connection");
+
+        let url: ServerUrl = "https://gs.example.com:9000/opsx".parse().unwrap();
+        let error = anyhow::anyhow!("Connection refused (os error 111)")
+            .context("tcp connect error")
+            .context("error sending request for url (https://gs.example.com:9000/server/banner)");
+        record_connect_failure(&url, &error);
+        assert_eq!(
+            no_connection_error().to_string(),
+            "no server connection: https://gs.example.com:9000/opsx: error sending request for \
+             url (https://gs.example.com:9000/server/banner): tcp connect error: Connection \
+             refused (os error 111)"
+        );
+
+        clear_connect_failure();
+        assert_eq!(no_connection_error().to_string(), "no server connection");
     }
 }
