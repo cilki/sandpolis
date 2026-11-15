@@ -66,6 +66,9 @@ ndk-context = { version = "0.1", optional = true }
 [dev-dependencies]
 test-log = { version = "0.2.21", features = ["trace"] }
 
+# The acceptor test reads back the line it logs for fail2ban
+tracing-subscriber = { version = "0.3.23", features = ["fmt"] }
+
 # `test-util` is not part of tokio's `full`, and the socket tests need a paused
 # clock to reach the keepalive deadline without waiting for it.
 tokio = { workspace = true, features = ["test-util"] }

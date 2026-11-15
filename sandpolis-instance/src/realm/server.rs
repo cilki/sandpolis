@@ -38,7 +38,7 @@ use std::io;
 use std::sync::Arc;
 use time::Duration;
 use time::OffsetDateTime;
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::net::TcpStream;
 use tokio_rustls::server::TlsStream;
 use tower::Layer;
 use tracing::debug;
@@ -348,39 +348,65 @@ fn is_cert_auth_error(error: &io::Error) -> bool {
         })
 }
 
-/// A rejected handshake, raised to the user when the realm configs ask for it.
-pub fn notify_cert_failure(error: &dyn std::fmt::Display) {
-    crate::notification::notify(
-        crate::notification::Notification::warn(
-            "Network",
-            "Connection rejected: certificate authentication failed",
-        )
-        .body(error.to_string()),
-    );
+/// A handshake that failed certificate authentication: the peer presented no
+/// certificate, or one the realm CAs don't vouch for. Logs the canonical line
+/// the shipped fail2ban filter matches (see `fail2ban/`), which needs the
+/// peer's address, and raises a notification when the realm configs ask for
+/// one.
+///
+/// This is the rejection a peer gets for reaching the realm's listener without
+/// a certificate the realm issued, which is the whole of what a stranger can
+/// do to it — so it is the one that has to reach fail2ban: without the line, a
+/// peer can retry forever and the ban never comes. (A peer that names no
+/// served realm at all fails earlier, on the server certificate, and stays
+/// at debug level with the rest of the handshake noise.)
+pub fn report_cert_failure(
+    peer: Option<std::net::IpAddr>,
+    error: &dyn std::fmt::Display,
+    notify_cert_failures: bool,
+) {
+    // Canonical line matched by the shipped fail2ban filter
+    if let Some(peer) = peer {
+        warn!(peer = %peer, reason = %error, "Authentication failure");
+    }
+
+    if notify_cert_failures {
+        crate::notification::notify(
+            crate::notification::Notification::warn(
+                "Network",
+                "Connection rejected: certificate authentication failed",
+            )
+            .body(error.to_string()),
+        );
+    }
 }
 
-impl<I, S> Accept<I, S> for RealmAcceptor
+// The acceptor is specific to TCP rather than generic over the stream because
+// a rejected handshake is reported with the peer's address, which only the
+// socket knows; by the time the TLS layer fails there is no request (and so no
+// `ConnectInfo`) to read it from.
+impl<S> Accept<TcpStream, S> for RealmAcceptor
 where
-    I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     S: Send + 'static,
 {
-    type Stream = TlsStream<I>;
+    type Stream = TlsStream<TcpStream>;
     // Since axum-server 0.9 the rustls acceptor wraps the service in its own
     // `TlsService` (which adds `Arc<TlsInfo>`); `TlsData` layers on top.
     type Service = AddExtension<TlsService<S>, TlsData>;
     type Future = BoxFuture<'static, io::Result<(Self::Stream, Self::Service)>>;
 
-    fn accept(&self, stream: I, service: S) -> Self::Future {
+    fn accept(&self, stream: TcpStream, service: S) -> Self::Future {
         let acceptor = self.acceptor.clone();
         let notify_cert_failures = self.notify_cert_failures;
+        let peer = stream.peer_addr().ok();
 
         Box::pin(async move {
             let (stream, service) = match acceptor.accept(stream, service).await {
                 Ok(result) => result,
                 Err(e) => {
                     debug!("TLS accept failed: {}", e);
-                    if notify_cert_failures && is_cert_auth_error(&e) {
-                        notify_cert_failure(&e);
+                    if is_cert_auth_error(&e) {
+                        report_cert_failure(peer.map(|peer| peer.ip()), &e, notify_cert_failures);
                     }
                     return Err(e);
                 }
@@ -395,6 +421,126 @@ where
 
             Ok((stream, service))
         })
+    }
+}
+
+#[cfg(test)]
+mod test_realm_acceptor {
+    use super::*;
+    use rustls::ClientConfig;
+    use rustls_pki_types::ServerName;
+    use std::sync::Mutex;
+    use tokio::net::TcpListener;
+
+    /// Everything tracing wrote while the guard was held, as the server's
+    /// stderr would carry it.
+    #[derive(Clone, Default)]
+    struct CapturedLog(Arc<Mutex<Vec<u8>>>);
+
+    impl io::Write for CapturedLog {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl CapturedLog {
+        fn text(&self) -> String {
+            String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+        }
+    }
+
+    /// A realm's acceptor and a client that trusts the realm but holds no
+    /// certificate of its own.
+    fn acceptor_and_anonymous_client() -> Result<(RealmAcceptor, ClientConfig, String)> {
+        let ca = RealmCert::new_cluster(ClusterId::default(), "alpha".parse()?)?;
+        let server = ca.server_cert(ServerId::random())?;
+
+        let mut roots = RootCertStore::empty();
+        roots.add(ca.cert.clone().try_into()?)?;
+        let roots = Arc::new(roots);
+
+        let config = ServerConfig::builder()
+            .with_client_cert_verifier(WebPkiClientVerifier::builder(roots.clone()).build()?)
+            .with_single_cert(
+                vec![server.cert.clone().try_into()?],
+                server
+                    .key
+                    .clone()
+                    .expect("a fresh server cert carries its key")
+                    .try_into()
+                    .map_err(|_| anyhow!("Failed to parse key"))?,
+            )?;
+
+        let client = ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+
+        Ok((
+            RealmAcceptor::new(config, false),
+            client,
+            server.subject_name()?,
+        ))
+    }
+
+    /// A peer that completes the TLS handshake without a client certificate is
+    /// refused at the handshake, before any request exists, and that refusal is
+    /// what fail2ban bans on — so it has to produce the canonical line, with
+    /// the peer's address, exactly as `fail2ban/filter.d/sandpolis.conf` expects
+    /// it.
+    #[tokio::test]
+    async fn rejected_certificate_logs_the_fail2ban_line() -> Result<()> {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let (acceptor, client, server_name) = acceptor_and_anonymous_client()?;
+
+        // Captured for this thread only; the current-thread runtime keeps the
+        // accept on it.
+        let log = CapturedLog::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer({
+                let log = log.clone();
+                move || log.clone()
+            })
+            .with_ansi(false)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+
+        let dial = tokio::spawn(async move {
+            let stream = tokio::net::TcpStream::connect(address).await?;
+            let local = stream.local_addr()?;
+            let connector = tokio_rustls::TlsConnector::from(Arc::new(client));
+            let server_name = ServerName::try_from(server_name)?;
+            // The server's alert ends the handshake; what the client sees of
+            // it isn't under test.
+            let _ = connector.connect(server_name, stream).await;
+            anyhow::Ok(local)
+        });
+
+        let (stream, _) = listener.accept().await?;
+        let rejected = acceptor.accept(stream, ()).await;
+        let client_address = dial.await??;
+
+        let error = rejected
+            .err()
+            .expect("a peer without a certificate is refused");
+        assert!(is_cert_auth_error(&error), "{error}");
+
+        // The filter's `failregex`, with `<HOST>` substituted the way fail2ban
+        // does for an IPv4 address.
+        let line = regex::Regex::new(&format!(
+            r"(?m)^.*WARN.*Authentication failure.*peer={}\b",
+            regex::escape(&client_address.ip().to_string())
+        ))?;
+        let text = log.text();
+        assert!(line.is_match(&text), "no fail2ban line in:\n{text}");
+        Ok(())
     }
 }
 

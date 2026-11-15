@@ -480,7 +480,7 @@ async fn accept_session(
 ) {
     use sandpolis_instance::network::webtransport::{self, close};
     use sandpolis_instance::realm::server::{
-        notify_cert_failure, report_unauthenticated, session_realm,
+        report_cert_failure, report_unauthenticated, session_realm,
     };
 
     let peer = incoming.remote_address();
@@ -489,8 +489,8 @@ async fn accept_session(
         Ok(request) => request,
         Err(e) => {
             tracing::debug!(%peer, error = %e, "Session handshake failed");
-            if notify_cert_failures && is_cert_auth_error(&e) {
-                notify_cert_failure(&e);
+            if is_cert_auth_error(&e) {
+                report_cert_failure(Some(peer.ip()), &e, notify_cert_failures);
             }
             return;
         }
