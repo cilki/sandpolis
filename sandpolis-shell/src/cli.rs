@@ -59,7 +59,12 @@ impl Drop for RawModeGuard {
 /// agent's PTY untouched, output written straight to stdout, and SIGWINCH
 /// propagated as a resize. Ends when the remote shell exits, adopting its exit
 /// code.
+///
+/// Like `ssh`, a PTY is only requested when stdin is a terminal. A piped
+/// script gets plain pipes instead, so its end closes the remote shell's stdin
+/// (a PTY has no half-close) and stderr stays apart from stdout.
 async fn run_raw_session(instance: InstanceId) -> Result<ExitCode> {
+    let interactive = std::io::stdin().is_terminal();
     let conn = sandpolis_client::sync::require_connection(Duration::from_secs(10)).await?;
 
     // Match the remote PTY to the local terminal from the start
@@ -80,6 +85,7 @@ async fn run_raw_session(instance: InstanceId) -> Result<ExitCode> {
             environment,
             rows: rows as u32,
             cols: cols as u32,
+            pty: interactive,
         },
         outbound_rx,
     );
@@ -97,7 +103,14 @@ async fn run_raw_session(instance: InstanceId) -> Result<ExitCode> {
         let mut buf = [0u8; 8192];
         loop {
             match stdin.read(&mut buf) {
-                Ok(0) | Err(_) => break,
+                // Local stdin ended (a piped script ran out, or `</dev/null`):
+                // pass that on, or the remote shell waits for input forever
+                // and so does this process.
+                Ok(0) => {
+                    let _ = stdin_outbound.blocking_send(ShellSessionStreamRequest::StdinEof);
+                    break;
+                }
+                Err(_) => break,
                 Ok(n) => {
                     let request = ShellSessionStreamRequest::Stdin {
                         data: buf[..n].to_vec(),

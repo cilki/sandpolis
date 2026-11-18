@@ -21,9 +21,19 @@ pub enum ShellSessionStreamRequest {
 
         /// Number of columns to request
         cols: u32,
+
+        /// Attach the shell to a PTY (an interactive terminal). Without one the
+        /// shell reads plain pipes, the way `ssh` runs a piped script: stdin
+        /// can be closed with [`StdinEof`](Self::StdinEof), nothing is echoed,
+        /// and stderr arrives apart from stdout.
+        #[serde(default = "default_pty")]
+        pty: bool,
     },
     /// Requester has stdin data
     Stdin { data: Vec<u8> },
+    /// Requester's stdin ended. Closes the shell's stdin on a pipe session; a
+    /// PTY has no half-close, so it's ignored there.
+    StdinEof,
     /// Requester changed the size of the terminal
     Resize {
         /// Update the number of rows
@@ -34,14 +44,18 @@ pub enum ShellSessionStreamRequest {
     },
 }
 
+fn default_pty() -> bool {
+    true
+}
+
 /// Event containing shell output, or notice that the shell exited.
 #[derive(Serialize, Deserialize)]
 pub enum ShellSessionStreamResponse {
     /// A chunk of shell output.
     Output {
         stdout: Vec<u8>,
-        /// Always empty on unix agents: the shell runs on a PTY, which merges
-        /// stderr into stdout by design.
+        /// Always empty on a PTY session, which merges stderr into stdout by
+        /// design.
         stderr: Vec<u8>,
     },
     /// The shell exited and no more output will arrive. Without this the
@@ -58,16 +72,27 @@ mod agent {
     use super::*;
     use anyhow::Result;
     use sandpolis_instance::network::StreamResponder;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
     use tokio::sync::RwLock;
     use tokio::sync::mpsc::Sender;
     use tokio_util::sync::CancellationToken;
 
+    /// Where the shell's stdin goes.
+    enum Input {
+        /// Write half of the PTY the shell is attached to.
+        #[cfg(unix)]
+        Pty(pty_process::OwnedWritePty),
+        /// The shell's stdin pipe. `None` once the requester closed it.
+        Pipe(Option<tokio::process::ChildStdin>),
+    }
+
     /// Stream that runs a bidirectional shell session.
     ///
-    /// On unix the shell is attached to a real PTY, so line editing, echo, and
-    /// full-screen programs behave like a local terminal. Other platforms fall
-    /// back to plain pipes.
+    /// An interactive session (`pty: true`) attaches the shell to a real PTY on
+    /// unix, so line editing, echo, and full-screen programs behave like a
+    /// local terminal. Otherwise — or on platforms without PTYs — the shell
+    /// gets plain pipes, so a piped script ends with
+    /// [`StdinEof`](ShellSessionStreamRequest::StdinEof) like it would locally.
     ///
     /// The child is owned by a background task that streams its output; the
     /// [`Start`](ShellSessionStreamRequest::Start) handler spawns that task and
@@ -79,12 +104,7 @@ mod agent {
     pub struct ShellSessionStreamResponder {
         /// Cancels the background reader task (and kills the child) on drop.
         cancel: CancellationToken,
-        /// Write half of the PTY the shell is attached to.
-        #[cfg(unix)]
-        pub pty: RwLock<Option<pty_process::OwnedWritePty>>,
-        /// Pipe to the shell's stdin (no PTY on this platform).
-        #[cfg(not(unix))]
-        pub stdin: RwLock<Option<tokio::process::ChildStdin>>,
+        input: RwLock<Option<Input>>,
     }
 
     impl StreamResponder for ShellSessionStreamResponder {
@@ -98,6 +118,7 @@ mod agent {
                     mut environment,
                     rows,
                     cols,
+                    pty,
                 } => {
                     // Add a default for TERM
                     if !environment.contains_key("TERM") {
@@ -109,7 +130,7 @@ mod agent {
                     let cols = if cols == 0 { 80 } else { cols };
 
                     #[cfg(unix)]
-                    {
+                    if pty {
                         let (pty, pts) = pty_process::open()?;
                         pty.resize(pty_process::Size::new(rows as u16, cols as u16))?;
 
@@ -118,7 +139,7 @@ mod agent {
                             .spawn(pts)?;
                         let (mut reader, writer) = pty.into_split();
 
-                        *self.pty.write().await = Some(writer);
+                        *self.input.write().await = Some(Input::Pty(writer));
 
                         let cancel = self.cancel.clone();
                         tokio::spawn(async move {
@@ -150,66 +171,75 @@ mod agent {
                                 .send(ShellSessionStreamResponse::Exited { code })
                                 .await;
                         });
+                        return Ok(());
                     }
-
                     #[cfg(not(unix))]
-                    {
-                        // Spawn the process and extract stdin/stdout
-                        let mut child = tokio::process::Command::new(&path)
-                            .envs(environment)
-                            .stdin(std::process::Stdio::piped())
-                            .stdout(std::process::Stdio::piped())
-                            .stderr(std::process::Stdio::piped())
-                            .spawn()?;
-                        let mut stdout = child.stdout.take().unwrap();
-                        let stdin = child.stdin.take().unwrap();
+                    let _ = (pty, rows, cols);
 
-                        *self.stdin.write().await = Some(stdin);
+                    let mut child = tokio::process::Command::new(&path)
+                        .envs(environment)
+                        .stdin(std::process::Stdio::piped())
+                        .stdout(std::process::Stdio::piped())
+                        .stderr(std::process::Stdio::piped())
+                        .kill_on_drop(true)
+                        .spawn()?;
+                    let stdout = child.stdout.take().unwrap();
+                    let stderr = child.stderr.take().unwrap();
+                    let stdin = child.stdin.take().unwrap();
 
-                        let cancel = self.cancel.clone();
-                        tokio::spawn(async move {
-                            let mut child = child;
-                            loop {
-                                let mut data = Vec::new();
-                                tokio::select! {
-                                    _ = cancel.cancelled() => break,
-                                    read = stdout.read_buf(&mut data) => match read {
-                                        Ok(0) => break, // EOF
-                                        Ok(_) => {
-                                            let response = ShellSessionStreamResponse::Output {
-                                                stdout: data,
-                                                stderr: Vec::new(),
-                                            };
-                                            if sender.send(response).await.is_err() {
-                                                break;
-                                            }
-                                        }
-                                        Err(_) => break,
-                                    }
-                                }
+                    *self.input.write().await = Some(Input::Pipe(Some(stdin)));
+
+                    let cancel = self.cancel.clone();
+                    tokio::spawn(async move {
+                        let mut child = child;
+                        let relayed = tokio::select! {
+                            _ = cancel.cancelled() => false,
+                            _ = relay_pipes(stdout, stderr, &sender) => true,
+                        };
+                        // Both pipes closing usually means the shell exited;
+                        // wait for it unless the session was torn down.
+                        let status = if relayed {
+                            tokio::select! {
+                                _ = cancel.cancelled() => None,
+                                status = child.wait() => status.ok(),
                             }
-                            let _ = child.start_kill();
-                            let code = child.wait().await.ok().and_then(|status| status.code());
-                            // Best-effort: the requester may already be gone.
-                            let _ = sender
-                                .send(ShellSessionStreamResponse::Exited { code })
-                                .await;
-                        });
-                    }
+                        } else {
+                            None
+                        };
+                        let code = match status {
+                            Some(status) => status.code(),
+                            None => {
+                                let _ = child.start_kill();
+                                child.wait().await.ok().and_then(|status| status.code())
+                            }
+                        };
+                        // Best-effort: the requester may already be gone.
+                        let _ = sender
+                            .send(ShellSessionStreamResponse::Exited { code })
+                            .await;
+                    });
                 }
                 ShellSessionStreamRequest::Stdin { data } => {
-                    #[cfg(unix)]
-                    if let Some(ref mut pty) = *self.pty.write().await {
-                        let _ = pty.write_all(&data).await;
+                    match &mut *self.input.write().await {
+                        #[cfg(unix)]
+                        Some(Input::Pty(pty)) => {
+                            let _ = pty.write_all(&data).await;
+                        }
+                        Some(Input::Pipe(Some(stdin))) => {
+                            let _ = stdin.write_all(&data).await;
+                        }
+                        Some(Input::Pipe(None)) | None => {}
                     }
-                    #[cfg(not(unix))]
-                    if let Some(ref mut stdin) = *self.stdin.write().await {
-                        let _ = stdin.write_all(&data).await;
+                }
+                ShellSessionStreamRequest::StdinEof => {
+                    // Dropping the pipe is what delivers EOF to the shell.
+                    if let Some(Input::Pipe(stdin)) = &mut *self.input.write().await {
+                        stdin.take();
                     }
                 }
                 ShellSessionStreamRequest::Resize { rows, cols } => {
                     #[cfg(unix)]
-                    if let Some(ref pty) = *self.pty.read().await {
+                    if let Some(Input::Pty(pty)) = &*self.input.read().await {
                         pty.resize(pty_process::Size::new(rows as u16, cols as u16))?;
                     }
                     #[cfg(not(unix))]
@@ -217,6 +247,41 @@ mod agent {
                 }
             }
             Ok(())
+        }
+    }
+
+    /// Forward a pipe session's stdout and stderr as `Output` chunks until both
+    /// are closed (or the requester is gone).
+    async fn relay_pipes(
+        mut stdout: impl AsyncRead + Unpin,
+        mut stderr: impl AsyncRead + Unpin,
+        sender: &Sender<ShellSessionStreamResponse>,
+    ) {
+        let (mut stdout_open, mut stderr_open) = (true, true);
+        while stdout_open || stderr_open {
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            tokio::select! {
+                read = stdout.read_buf(&mut out), if stdout_open => {
+                    if !matches!(read, Ok(n) if n > 0) {
+                        stdout_open = false;
+                        continue;
+                    }
+                }
+                read = stderr.read_buf(&mut err), if stderr_open => {
+                    if !matches!(read, Ok(n) if n > 0) {
+                        stderr_open = false;
+                        continue;
+                    }
+                }
+            }
+            let response = ShellSessionStreamResponse::Output {
+                stdout: out,
+                stderr: err,
+            };
+            if sender.send(response).await.is_err() {
+                return;
+            }
         }
     }
 
@@ -352,6 +417,7 @@ mod test_shell_session {
             environment,
             rows,
             cols,
+            pty: true,
         };
 
         // Run on_message in a separate task since it blocks reading output
@@ -420,6 +486,49 @@ mod test_shell_session {
             Some(Some(3)),
             "Expected an Exited event carrying the shell's exit code"
         );
+    }
+
+    /// Without a PTY the shell reads pipes: closing stdin ends it, nothing is
+    /// echoed, and stderr comes back apart from stdout.
+    #[tokio::test]
+    async fn test_pipe_session_ends_on_stdin_eof() {
+        let responder = Arc::new(ShellSessionStreamResponder::default());
+        let (tx, mut rx) = mpsc::channel::<ShellSessionStreamResponse>(32);
+        responder
+            .on_message(
+                ShellSessionStreamRequest::Start {
+                    path: PathBuf::from("/bin/sh"),
+                    environment: HashMap::new(),
+                    rows: 0,
+                    cols: 0,
+                    pty: false,
+                },
+                tx,
+            )
+            .await
+            .unwrap();
+
+        send_stdin(&responder, b"echo out; echo err >&2").await;
+        responder
+            .on_message(ShellSessionStreamRequest::StdinEof, mpsc::channel(1).0)
+            .await
+            .unwrap();
+
+        let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+        let exited = loop {
+            match tokio::time::timeout(tokio::time::Duration::from_secs(5), rx.recv()).await {
+                Ok(Some(ShellSessionStreamResponse::Output { stdout: o, stderr: e })) => {
+                    stdout.extend(o);
+                    stderr.extend(e);
+                }
+                Ok(Some(ShellSessionStreamResponse::Exited { code })) => break code,
+                other => panic!("session didn't exit after stdin EOF: {:?}", other.is_ok()),
+            }
+        };
+
+        assert_eq!(exited, Some(0));
+        assert_eq!(String::from_utf8_lossy(&stdout), "out\n");
+        assert_eq!(String::from_utf8_lossy(&stderr), "err\n");
     }
 
     #[tokio::test]

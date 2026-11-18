@@ -411,6 +411,7 @@ fn open_session_stream(
         environment: HashMap::new(),
         rows: rows as u32,
         cols: cols as u32,
+        pty: true,
     };
     spawn_shell_stream(conn, instance, requester, initial, outbound_rx);
     SessionStart::Opened(output)
@@ -447,6 +448,8 @@ fn spawn_ssh_stream(
                 }
                 // Sent as the stream's initial request, never through here.
                 ShellSessionStreamRequest::Start { .. } => continue,
+                // The terminal widget never closes its input.
+                ShellSessionStreamRequest::StdinEof => continue,
             };
             let payload = match serde_cbor::to_vec(&req) {
                 Ok(p) => p,
