@@ -326,6 +326,12 @@ async fn open_endpoint(
         loop {
             tokio::select! {
                 _ = cancel.cancelled() => break,
+                // The endpoint went away. Closing the stream drops its
+                // requester, which ends the bridge so the orchestrator reopens
+                // the tunnel once the endpoint is back. Without this, a
+                // listener endpoint is never written to and the bridge would
+                // wait on the dead stream forever.
+                _ = conn.cancel.cancelled() => break,
                 request = to_rx.recv() => match request {
                     Some(request) => match serde_cbor::to_vec(&request) {
                         Ok(payload) => {
