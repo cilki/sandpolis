@@ -33,6 +33,19 @@ pub async fn dispatch(
         Some(DesktopCommand::Screenshot { desktop, output }) => {
             screenshot(target, desktop, output).await
         }
+        // The live viewer only exists as a TUI; a noninteractive caller gets
+        // told so, and where the one-shot capture lives.
+        None if target.json => {
+            println!(
+                "{}",
+                json!({
+                    "status": "unimplemented",
+                    "command": "desktop",
+                    "detail": "the live viewer is interactive; use `desktop screenshot` for a capture",
+                })
+            );
+            Ok(ExitCode::FAILURE)
+        }
         None => {
             // With --instance, open the live terminal viewer pointed at that
             // agent; without one, show a placeholder (the agent picker isn't
