@@ -311,11 +311,15 @@ macro_rules! test_db {
 /// Like [`test_db!`] but with scoped write authority, for testing what a local
 /// stratum server may and may not write. Pass an `Arc<ScopeTable>` first so the
 /// test can grant and release scopes.
+///
+/// A model may carry attributes, so one that only exists under some feature
+/// can be listed as `#[cfg(feature = "client")] SavedServerData`.
 #[macro_export]
 macro_rules! test_scoped_db {
-    ($table:expr, $($model:ident),+ $(,)?) => {{
+    ($table:expr, $($(#[$meta:meta])* $model:ident),+ $(,)?) => {{
         let models = Box::leak(Box::new(native_db::Models::new()));
         $(
+            $(#[$meta])*
             models.define::<$model>().unwrap();
         )+
 

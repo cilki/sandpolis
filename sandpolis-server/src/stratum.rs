@@ -494,6 +494,8 @@ async fn run_link(
 mod test_enroll {
     use super::*;
     use crate::banner::ServerBannerData;
+    #[cfg(feature = "client")]
+    use crate::client::SavedServerData;
     use crate::ownership::OwnershipData;
     use sandpolis_instance::database::{DatabaseManager, ScopeTable};
     use sandpolis_instance::domain::DomainData;
@@ -504,7 +506,9 @@ mod test_enroll {
     use sandpolis_instance::{ClusterId, InstanceIdentityData, InstanceManagerData, InstanceType};
 
     /// A local stratum server's database: scoped write authority, like the
-    /// real one.
+    /// real one. With `client` on (as it is whenever the workspace is built
+    /// with `--features server,agent,client`), `ServerManager::new` also loads
+    /// the saved servers, so their table has to exist too.
     fn database() -> Result<DatabaseManager> {
         let table = Arc::new(ScopeTable::default());
         Ok(sandpolis_instance::test_scoped_db!(
@@ -520,6 +524,8 @@ mod test_enroll {
             OwnershipData,
             RealmData,
             RealmCert,
+            #[cfg(feature = "client")]
+            SavedServerData,
         ))
     }
 
