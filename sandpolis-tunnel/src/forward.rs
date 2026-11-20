@@ -28,7 +28,52 @@ const IO_BUFFER: usize = 16 * 1024;
 /// Largest UDP datagram the listener will relay.
 const UDP_BUFFER: usize = 64 * 1024;
 
-/// A live logical connection's write side and cancellation.
+/// A live TCP connection on an endpoint.
+///
+/// Like TCP itself, each direction closes on its own: the peer's `Close` ends
+/// what is written to the socket, the socket's EOF ends what is read from it,
+/// and the connection is forgotten once both have happened. Tearing the whole
+/// connection down on either one would cut off the answer to a client that
+/// half-closes after sending its request (`nc -N`, `ssh host cmd < file`).
+struct TcpConn {
+    /// Bytes to write toward the socket. Dropped on the peer's `Close`, which
+    /// lets the write task flush what is queued and then shut down the
+    /// socket's write half.
+    to_socket: Option<UnboundedSender<Vec<u8>>>,
+    /// Whether the socket's read half has ended and the server been told.
+    read_done: bool,
+    /// Aborts both of the connection's tasks.
+    cancel: CancellationToken,
+}
+
+/// The peer will send nothing more on `conn`: finish writing toward the socket.
+fn close_tcp_write(conns: &mut HashMap<u64, TcpConn>, conn: u64) {
+    if let Some(handle) = conns.get_mut(&conn) {
+        handle.to_socket = None;
+        if handle.read_done {
+            conns.remove(&conn);
+        }
+    }
+}
+
+/// The socket of `conn` will yield nothing more: tell the server.
+fn tcp_read_ended(
+    conns: &mut HashMap<u64, TcpConn>,
+    conn: u64,
+    responses: &UnboundedSender<TunnelStreamResponse>,
+) {
+    if let Some(handle) = conns.get_mut(&conn) {
+        if !handle.read_done {
+            handle.read_done = true;
+            let _ = responses.send(TunnelStreamResponse::Closed { conn });
+        }
+        if handle.to_socket.is_none() {
+            conns.remove(&conn);
+        }
+    }
+}
+
+/// A live UDP session's write side and cancellation.
 struct ConnHandle {
     /// Bytes to write toward the socket for this connection.
     to_socket: UnboundedSender<Vec<u8>>,
@@ -137,21 +182,17 @@ async fn tcp_listener(
         });
     }
 
-    let mut conns: HashMap<u64, ConnHandle> = HashMap::new();
+    let mut conns: HashMap<u64, TcpConn> = HashMap::new();
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
             request = requests.recv() => match request {
                 Some(TunnelStreamRequest::Data { conn, bytes }) => {
-                    if let Some(handle) = conns.get(&conn) {
-                        let _ = handle.to_socket.send(bytes);
+                    if let Some(to_socket) = conns.get(&conn).and_then(|h| h.to_socket.as_ref()) {
+                        let _ = to_socket.send(bytes);
                     }
                 }
-                Some(TunnelStreamRequest::Close { conn }) => {
-                    if let Some(handle) = conns.remove(&conn) {
-                        handle.cancel.cancel();
-                    }
-                }
+                Some(TunnelStreamRequest::Close { conn }) => close_tcp_write(&mut conns, conn),
                 Some(_) => {} // Open/Connect are not meaningful for a listener.
                 None => break,
             },
@@ -160,11 +201,7 @@ async fn tcp_listener(
                     let _ = responses.send(TunnelStreamResponse::Accepted { conn, peer: peer.to_string() });
                     conns.insert(conn, spawn_tcp_conn(conn, stream, responses.clone(), internal_tx.clone()));
                 }
-                Some(Internal::Ended { conn }) => {
-                    if conns.remove(&conn).is_some() {
-                        let _ = responses.send(TunnelStreamResponse::Closed { conn });
-                    }
-                }
+                Some(Internal::Ended { conn }) => tcp_read_ended(&mut conns, conn, &responses),
                 _ => {}
             },
         }
@@ -184,7 +221,7 @@ async fn tcp_terminator(
     let _ = responses.send(TunnelStreamResponse::Ready);
 
     let (internal_tx, mut internal_rx) = unbounded_channel::<Internal>();
-    let mut conns: HashMap<u64, ConnHandle> = HashMap::new();
+    let mut conns: HashMap<u64, TcpConn> = HashMap::new();
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
@@ -200,15 +237,11 @@ async fn tcp_terminator(
                     });
                 }
                 Some(TunnelStreamRequest::Data { conn, bytes }) => {
-                    if let Some(handle) = conns.get(&conn) {
-                        let _ = handle.to_socket.send(bytes);
+                    if let Some(to_socket) = conns.get(&conn).and_then(|h| h.to_socket.as_ref()) {
+                        let _ = to_socket.send(bytes);
                     }
                 }
-                Some(TunnelStreamRequest::Close { conn }) => {
-                    if let Some(handle) = conns.remove(&conn) {
-                        handle.cancel.cancel();
-                    }
-                }
+                Some(TunnelStreamRequest::Close { conn }) => close_tcp_write(&mut conns, conn),
                 Some(TunnelStreamRequest::Open { .. }) => {}
                 None => break,
             },
@@ -220,11 +253,7 @@ async fn tcp_terminator(
                 Some(Internal::ConnectFailed { conn, message }) => {
                     let _ = responses.send(TunnelStreamResponse::ConnectFailed { conn, message });
                 }
-                Some(Internal::Ended { conn }) => {
-                    if conns.remove(&conn).is_some() {
-                        let _ = responses.send(TunnelStreamResponse::Closed { conn });
-                    }
-                }
+                Some(Internal::Ended { conn }) => tcp_read_ended(&mut conns, conn, &responses),
                 _ => {}
             },
         }
@@ -241,15 +270,25 @@ fn spawn_tcp_conn(
     stream: TcpStream,
     responses: UnboundedSender<TunnelStreamResponse>,
     internal: UnboundedSender<Internal>,
-) -> ConnHandle {
+) -> TcpConn {
     let (read_half, write_half) = stream.into_split();
     let cancel = CancellationToken::new();
     let (to_socket, rx) = unbounded_channel::<Vec<u8>>();
     tokio::spawn(tcp_write_task(write_half, rx, cancel.clone()));
     tokio::spawn(tcp_read_task(read_half, conn, responses, internal, cancel.clone()));
-    ConnHandle { to_socket, cancel }
+    TcpConn {
+        to_socket: Some(to_socket),
+        read_done: false,
+        cancel,
+    }
 }
 
+/// Write the peer's bytes to the socket until the peer closes its side (the
+/// sender is dropped), then shut down the socket's write half.
+///
+/// A `Close` is handled only after every `Data` the peer sent before it, so
+/// dropping the sender still delivers the tail of the stream first: a target
+/// that answers and hangs up doesn't get its response truncated.
 async fn tcp_write_task(
     mut write_half: OwnedWriteHalf,
     mut rx: UnboundedReceiver<Vec<u8>>,
@@ -257,22 +296,14 @@ async fn tcp_write_task(
 ) {
     loop {
         tokio::select! {
-            _ = cancel.cancelled() => {
-                // A `Close` is handled only after every `Data` the peer sent
-                // before it, so whatever is still queued here is the tail of
-                // the stream. Without this, a close racing that tail (e.g. a
-                // target that answers and hangs up) truncates the response.
-                while let Ok(bytes) = rx.try_recv() {
-                    if write_half.write_all(&bytes).await.is_err() {
-                        break;
-                    }
-                }
-                break;
-            }
+            _ = cancel.cancelled() => return,
             bytes = rx.recv() => match bytes {
                 Some(bytes) => {
                     if write_half.write_all(&bytes).await.is_err() {
-                        break;
+                        // The socket is gone; take the read side down too so
+                        // the server hears about it.
+                        cancel.cancel();
+                        return;
                     }
                 }
                 None => break,
@@ -292,8 +323,7 @@ async fn tcp_read_task(
     let mut buf = vec![0u8; IO_BUFFER];
     loop {
         tokio::select! {
-            // Closed by request (peer teardown); the server already knows.
-            _ = cancel.cancelled() => return,
+            _ = cancel.cancelled() => break,
             read = read_half.read(&mut buf) => match read {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
@@ -691,6 +721,115 @@ mod tests {
         cancel.cancel();
     }
 
+    /// A `Close` only ends what's written to the target: a target that reads
+    /// its request to EOF before answering still gets its answer back, and
+    /// only then does the terminator report the connection closed.
+    #[tokio::test]
+    async fn terminator_reads_the_answer_after_close() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            socket.read_to_end(&mut request).await.unwrap();
+            socket
+                .write_all(format!("got {}", request.len()).as_bytes())
+                .await
+                .unwrap();
+        });
+
+        let (to_tx, to_rx) = unbounded_channel();
+        let (resp_tx, mut resp_rx) = unbounded_channel();
+        let cancel = CancellationToken::new();
+        tokio::spawn(run_endpoint(
+            TunnelRole::Terminator {
+                target: target.to_string(),
+            },
+            TunnelProtocol::Tcp,
+            to_rx,
+            resp_tx,
+            cancel.clone(),
+        ));
+        assert!(matches!(recv(&mut resp_rx).await, TunnelStreamResponse::Ready));
+        to_tx.send(TunnelStreamRequest::Connect { conn: 1 }).unwrap();
+        assert!(matches!(
+            recv(&mut resp_rx).await,
+            TunnelStreamResponse::Connected { conn: 1 }
+        ));
+
+        to_tx
+            .send(TunnelStreamRequest::Data {
+                conn: 1,
+                bytes: b"hello".to_vec(),
+            })
+            .unwrap();
+        to_tx.send(TunnelStreamRequest::Close { conn: 1 }).unwrap();
+
+        let mut answer = Vec::new();
+        loop {
+            match recv(&mut resp_rx).await {
+                TunnelStreamResponse::Data { conn: 1, bytes } => answer.extend(bytes),
+                TunnelStreamResponse::Closed { conn: 1 } => break,
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        assert_eq!(answer, b"got 5");
+        cancel.cancel();
+    }
+
+    /// The listener's client half-closes after its request: the server hears
+    /// `Closed`, and the answer still reaches the client afterwards.
+    #[tokio::test]
+    async fn listener_answers_a_half_closed_client() {
+        let addr = {
+            let probe = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            probe.local_addr().unwrap()
+        };
+        let (to_tx, to_rx) = unbounded_channel();
+        let (resp_tx, mut resp_rx) = unbounded_channel();
+        let cancel = CancellationToken::new();
+        tokio::spawn(run_endpoint(
+            TunnelRole::Listener { listen: addr },
+            TunnelProtocol::Tcp,
+            to_rx,
+            resp_tx,
+            cancel.clone(),
+        ));
+        assert!(matches!(recv(&mut resp_rx).await, TunnelStreamResponse::Ready));
+
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        let conn = match recv(&mut resp_rx).await {
+            TunnelStreamResponse::Accepted { conn, .. } => conn,
+            other => panic!("unexpected {other:?}"),
+        };
+        client.write_all(b"ping").await.unwrap();
+        client.shutdown().await.unwrap();
+        let mut request = Vec::new();
+        loop {
+            match recv(&mut resp_rx).await {
+                TunnelStreamResponse::Data { conn: c, bytes } if c == conn => request.extend(bytes),
+                TunnelStreamResponse::Closed { conn: c } if c == conn => break,
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        assert_eq!(request, b"ping");
+
+        to_tx
+            .send(TunnelStreamRequest::Data {
+                conn,
+                bytes: b"pong".to_vec(),
+            })
+            .unwrap();
+        to_tx.send(TunnelStreamRequest::Close { conn }).unwrap();
+        let mut answer = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), client.read_to_end(&mut answer))
+            .await
+            .expect("listener never shut the connection down")
+            .unwrap();
+        assert_eq!(answer, b"pong");
+        cancel.cancel();
+    }
+
     /// A `Close` that arrives right behind the last `Data` (a target that
     /// answers and hangs up) still delivers that data before the socket is
     /// shut down. Whether the close beats the queued bytes is a coin flip per
@@ -716,9 +855,13 @@ mod tests {
         let payload: Vec<u8> = (0..64 * 1024).map(|i| i as u8).collect();
         for _ in 0..32 {
             let mut client = TcpStream::connect(addr).await.unwrap();
-            let conn = match recv(&mut resp_rx).await {
-                TunnelStreamResponse::Accepted { conn, .. } => conn,
-                other => panic!("unexpected {other:?}"),
+            let conn = loop {
+                match recv(&mut resp_rx).await {
+                    TunnelStreamResponse::Accepted { conn, .. } => break conn,
+                    // The previous iteration's client hanging up.
+                    TunnelStreamResponse::Closed { .. } => {}
+                    other => panic!("unexpected {other:?}"),
+                }
             };
 
             to_tx

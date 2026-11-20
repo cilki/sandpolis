@@ -352,11 +352,22 @@ async fn open_endpoint(
 }
 
 /// Per-connection bridge state.
+///
+/// An endpoint's `Closed` means its socket has finished sending, not that the
+/// connection is over: it's forwarded as a `Close` that shuts the other side's
+/// write half, and the connection lasts until both sides have closed. That's
+/// what lets a client half-close after its request and still read the answer.
+#[derive(Default)]
 struct ConnState {
     /// Whether the terminator has connected to the target yet.
     connected: bool,
     /// Listener bytes buffered until the terminator connects.
     buffer: Vec<Vec<u8>>,
+    /// The listener's client has finished sending. Until the terminator
+    /// connects, its `Close` waits behind the buffered bytes.
+    listener_closed: bool,
+    /// The target has finished sending.
+    terminator_closed: bool,
 }
 
 /// Copy bytes between the two endpoints until one goes away or `cancel` fires.
@@ -401,7 +412,7 @@ async fn run_bridge(
             message = listener.from.recv() => match message {
                 None => return finish(&row, None),
                 Some(TunnelStreamResponse::Accepted { conn, .. }) => {
-                    conns.insert(conn, ConnState { connected: false, buffer: Vec::new() });
+                    conns.insert(conn, ConnState::default());
                     let _ = terminator.to.send(TunnelStreamRequest::Connect { conn });
                     dirty = true;
                 }
@@ -417,9 +428,15 @@ async fn run_bridge(
                     }
                 }
                 Some(TunnelStreamResponse::Closed { conn }) => {
-                    if conns.remove(&conn).is_some() {
-                        let _ = terminator.to.send(TunnelStreamRequest::Close { conn });
-                        dirty = true;
+                    if let Some(state) = conns.get_mut(&conn) {
+                        state.listener_closed = true;
+                        if state.connected {
+                            let _ = terminator.to.send(TunnelStreamRequest::Close { conn });
+                        }
+                        if state.terminator_closed {
+                            conns.remove(&conn);
+                            dirty = true;
+                        }
                     }
                 }
                 Some(TunnelStreamResponse::Error { message }) => {
@@ -437,6 +454,9 @@ async fn run_bridge(
                         for bytes in state.buffer.drain(..) {
                             let _ = terminator.to.send(TunnelStreamRequest::Data { conn, bytes });
                         }
+                        if state.listener_closed {
+                            let _ = terminator.to.send(TunnelStreamRequest::Close { conn });
+                        }
                     }
                 }
                 Some(TunnelStreamResponse::ConnectFailed { conn, .. }) => {
@@ -451,9 +471,13 @@ async fn run_bridge(
                     let _ = listener.to.send(TunnelStreamRequest::Data { conn, bytes });
                 }
                 Some(TunnelStreamResponse::Closed { conn }) => {
-                    if conns.remove(&conn).is_some() {
+                    if let Some(state) = conns.get_mut(&conn) {
+                        state.terminator_closed = true;
                         let _ = listener.to.send(TunnelStreamRequest::Close { conn });
-                        dirty = true;
+                        if state.listener_closed {
+                            conns.remove(&conn);
+                            dirty = true;
+                        }
                     }
                 }
                 Some(TunnelStreamResponse::Error { message }) => {
@@ -619,6 +643,80 @@ mod tests {
         drop(listener_responses);
         assert!(!bridge.await?);
         assert_eq!(row.read().state, TunnelState::Pending);
+        Ok(())
+    }
+
+    async fn next(rx: &mut UnboundedReceiver<TunnelStreamRequest>) -> TunnelStreamRequest {
+        tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("bridge request timed out")
+            .expect("bridge hung up")
+    }
+
+    /// A client that sends its request and half-closes before the target is
+    /// even dialed: the terminator gets the request and then the `Close`, in
+    /// that order, and the answer still flows back to the listener after the
+    /// listener's side has closed.
+    #[tokio::test]
+    async fn half_closed_connection_carries_the_answer() -> Result<()> {
+        let row = row()?;
+        let (listener_to, mut listener_requests) = unbounded_channel();
+        let (listener_responses, listener_from) = unbounded_channel();
+        let (terminator_to, mut terminator_requests) = unbounded_channel();
+        let (terminator_responses, terminator_from) = unbounded_channel();
+        listener_responses.send(TunnelStreamResponse::Ready)?;
+        terminator_responses.send(TunnelStreamResponse::Ready)?;
+        tokio::spawn(run_bridge(
+            Endpoint {
+                to: listener_to,
+                from: listener_from,
+            },
+            Endpoint {
+                to: terminator_to,
+                from: terminator_from,
+            },
+            row.clone(),
+            TunnelMode::Indirect,
+            CancellationToken::new(),
+        ));
+
+        listener_responses.send(TunnelStreamResponse::Accepted {
+            conn: 1,
+            peer: "127.0.0.1:1".into(),
+        })?;
+        listener_responses.send(TunnelStreamResponse::Data {
+            conn: 1,
+            bytes: b"request".to_vec(),
+        })?;
+        listener_responses.send(TunnelStreamResponse::Closed { conn: 1 })?;
+        assert!(matches!(
+            next(&mut terminator_requests).await,
+            TunnelStreamRequest::Connect { conn: 1 }
+        ));
+
+        terminator_responses.send(TunnelStreamResponse::Connected { conn: 1 })?;
+        match next(&mut terminator_requests).await {
+            TunnelStreamRequest::Data { conn: 1, bytes } => assert_eq!(bytes, b"request"),
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(matches!(
+            next(&mut terminator_requests).await,
+            TunnelStreamRequest::Close { conn: 1 }
+        ));
+
+        terminator_responses.send(TunnelStreamResponse::Data {
+            conn: 1,
+            bytes: b"answer".to_vec(),
+        })?;
+        terminator_responses.send(TunnelStreamResponse::Closed { conn: 1 })?;
+        match next(&mut listener_requests).await {
+            TunnelStreamRequest::Data { conn: 1, bytes } => assert_eq!(bytes, b"answer"),
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(matches!(
+            next(&mut listener_requests).await,
+            TunnelStreamRequest::Close { conn: 1 }
+        ));
         Ok(())
     }
 }
