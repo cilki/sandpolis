@@ -83,10 +83,13 @@ mod test_lsp_args {
         )))
         .expect("the generated index deserializes");
 
-        // Newtypes parsed from a string. Indexing their definitions wouldn't
-        // help: the analyzer would expect the struct, not the string a realm
-        // config writes for them.
-        const PARSED_FROM_STRINGS: &[&str] = &["RealmName", "ServerUrl", "UserName", "Permission"];
+        // Types serde parses from a string (`#[serde(try_from = "String")]`).
+        // Indexing their definitions wouldn't help: the analyzer would expect
+        // the struct, not the string a realm config writes for them. Plain
+        // newtypes like `RealmName` don't belong here: serde reads them as
+        // `("default")`, not `"default"`, so they need indexing like any
+        // other struct.
+        const PARSED_FROM_STRINGS: &[&str] = &["Permission"];
 
         let unknown: Vec<_> = analyzer
             .validate_field_types()

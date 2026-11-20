@@ -22,9 +22,8 @@ pub mod server;
 
 static USER_NAME_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new("^[a-z0-9]{4,32}$").unwrap());
 
-/// A user's username is forever unchangable.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-pub struct UserName(String);
+// Defined with the config that names it, so `sandpolis lsp` can index it.
+pub use config::UserName;
 
 impl Deref for UserName {
     type Target = String;

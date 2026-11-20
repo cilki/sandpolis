@@ -1,7 +1,13 @@
-use super::UserName;
 use sandpolis_instance::Permission;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+
+/// A user's username is forever unchangable.
+///
+/// A newtype rather than a string as far as serde is concerned, so a realm
+/// config spells it `("admin")`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct UserName(pub(super) String);
 
 /// The `user` section of a realm config, which is the only place user accounts
 /// are ever created or modified. The global stratum server reconciles this into

@@ -1,9 +1,36 @@
-use crate::realm::RealmName;
-use crate::realm::url::ServerUrl;
 use anyhow::{Context, Result, bail};
 use pem::{Pem, encode};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+
+/// Realms have unique names and are shared across the entire cluster. Realm
+/// names cannot be changed after they are created.
+///
+/// A newtype rather than a string as far as serde is concerned, so a realm
+/// config spells it `("default")`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct RealmName(pub(super) String);
+
+/// Locates a server instance over the network. These have a format like:
+///
+/// ```text
+/// https://example.com:8768/default
+/// ```
+///
+/// With default information omitted, the URL can be as simple as:
+///
+/// ```text
+/// https://example.com
+/// ```
+///
+/// That's its string form; serde writes it as a struct, which is how a realm
+/// config spells it (`(host: "example.com", port: 8768, realm: ("default"))`).
+#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
+pub struct ServerUrl {
+    pub host: String,
+    pub port: u16,
+    pub realm: RealmName,
+}
 
 /// PEM tag for an X.509 certificate.
 pub const CERTIFICATE_TAG: &str = "CERTIFICATE";

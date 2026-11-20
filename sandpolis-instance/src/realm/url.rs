@@ -1,28 +1,12 @@
 use crate::realm::RealmName;
 use anyhow::{Result, anyhow};
-use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::str::FromStr;
 use url::Url;
 
-/// Locates a server instance over the network. These have a format like:
-///
-/// ```text
-/// https://example.com:8768/default
-/// ```
-///
-/// With default information omitted, the URL can be as simple as:
-///
-/// ```text
-/// https://example.com
-/// ```
-#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
-pub struct ServerUrl {
-    pub host: String,
-    pub port: u16,
-    pub realm: RealmName,
-}
+// Defined with the config that names it, so `sandpolis lsp` can index it.
+pub use crate::realm::config::ServerUrl;
 
 impl ServerUrl {
     /// Resolve the URL into IP addresses.

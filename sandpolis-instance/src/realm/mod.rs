@@ -43,10 +43,8 @@ pub mod url;
 static REALM_NAME_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new("^[a-z0-9]{4,32}$").unwrap());
 
-/// Realms have unique names and are shared across the entire cluster. Realm
-/// names cannot be changed after they are created.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct RealmName(String);
+// Defined with the config that names it, so `sandpolis lsp` can index it.
+pub use config::RealmName;
 
 impl Default for RealmName {
     fn default() -> Self {
