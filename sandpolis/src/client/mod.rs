@@ -10,6 +10,14 @@ pub mod tui;
 /// foreground, or a subcommand's focused TUI.
 #[cfg(not(target_os = "android"))]
 pub async fn start(command: crate::cli::Commands) -> anyhow::Result<std::process::ExitCode> {
+    // Without a display bevy panics deep inside its startup, after the
+    // connections are already up. Say so before reaching for a server at all.
+    if let crate::cli::Commands::Client { .. } = command
+        && let Some(reason) = missing_display(|name| std::env::var(name).ok())
+    {
+        anyhow::bail!(reason);
+    }
+
     let args = command.client_args().cloned().unwrap_or_default();
     let options = args.options();
 
@@ -257,6 +265,35 @@ fn missing_realm_cert(searched: Option<&std::path::Path>) -> String {
     }
 }
 
+/// Why the GUI can't open a window, if it can't, given a lookup of environment
+/// variables.
+///
+/// On the Unix desktops winit picks its Wayland or X11 backend from these
+/// variables alone, treating an empty one as unset, and bevy panics when it
+/// finds neither. Elsewhere the platform always has a window system.
+#[cfg(not(target_os = "android"))]
+fn missing_display(var: impl Fn(&str) -> Option<String>) -> Option<&'static str> {
+    if !cfg!(any(
+        target_os = "linux",
+        target_os = "freebsd",
+        target_os = "dragonfly",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    )) {
+        return None;
+    }
+
+    let set = |name| var(name).is_some_and(|value| !value.is_empty());
+    if set("WAYLAND_DISPLAY") || set("WAYLAND_SOCKET") || set("DISPLAY") {
+        return None;
+    }
+    Some(
+        "no display to open the GUI on: none of WAYLAND_DISPLAY, WAYLAND_SOCKET or \
+         DISPLAY is set; run it from a graphical session, or use a subcommand \
+         (`sandpolis --help` lists them) for a terminal interface",
+    )
+}
+
 /// Where a client without `--data` keeps its realm certs, so a cert imported
 /// through the GUI survives ephemeral runs.
 #[cfg(not(target_os = "android"))]
@@ -323,4 +360,31 @@ pub fn spawn_server_connection(state: InstanceState, url: sandpolis_server::Serv
             }
         }
     });
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::missing_display;
+
+    fn env(vars: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let vars: Vec<(String, String)> = vars
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        move |name| vars.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone())
+    }
+
+    #[test]
+    fn any_display_variable_is_enough() {
+        for name in ["WAYLAND_DISPLAY", "WAYLAND_SOCKET", "DISPLAY"] {
+            assert_eq!(missing_display(env(&[(name, "x")])), None, "{name}");
+        }
+    }
+
+    /// winit treats an empty variable as unset, so an empty one is no display.
+    #[test]
+    fn no_or_empty_variables_are_no_display() {
+        assert!(missing_display(env(&[])).is_some());
+        assert!(missing_display(env(&[("WAYLAND_DISPLAY", ""), ("DISPLAY", "")])).is_some());
+    }
 }
