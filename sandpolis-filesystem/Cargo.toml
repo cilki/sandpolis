@@ -25,6 +25,7 @@ tracing = { workspace = true }
 
 # GUI dependencies
 bevy = { workspace = true, optional = true }
+gesso = { workspace = true, optional = true }
 
 # Terminal (TUI/CLI) dependencies, excluded on Android
 [target.'cfg(not(target_os = "android"))'.dependencies]
@@ -43,6 +44,7 @@ probe = ["dep:sandpolis-probe"]
 client = [
   "dep:fuser",
   "dep:bevy",
+  "dep:gesso",
   "dep:sandpolis-client",
   "dep:ratatui",
   "dep:chrono",

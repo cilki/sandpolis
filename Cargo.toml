@@ -143,7 +143,10 @@ bevy = { version = "0.20.1", features = [
 bevy_svg = { git = "https://github.com/Weasy666/bevy_svg", rev = "844cd956ea2ffd78020b87098e43c20dd7d59297", features = ["2d"] }
 bevy_rapier2d = "0.37.0"
 bevy_ui_widgets = { version = "0.20.1" }
-resvg = { version = "0.50.0" }
+# The world view. Lives in a sibling checkout for now; point this at a git
+# dependency once gesso is published, since nothing outside this repository is
+# visible to the Docker build context or to CI.
+gesso = { path = "../gesso" }
 include_dir = { version = "0.7" }
 
 [patch.crates-io]

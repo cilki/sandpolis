@@ -17,18 +17,21 @@ use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::ui::RelativeCursorPosition;
-use sandpolis_client::gui::ui::Activate;
-use sandpolis_client::gui::ui::bind::bind_text;
+use gesso::ui::Activate;
+use gesso::ui::bind::bind_text;
+use gesso::ui::node_panel::{NodePanel, PanelCtx, PanelTarget};
+use gesso::ui::theme::Role;
+use gesso::ui::widgets::{button, heading, row, text};
+use sandpolis_client::gui::node_panel::PanelTargetExt;
 use sandpolis_client::gui::ui::layer::{LayerClientInfo, RegisterLayerClient};
-use sandpolis_client::gui::ui::node_panel::{NodePanel, PanelCtx, PanelTarget};
-use sandpolis_client::gui::ui::theme::Role;
-use sandpolis_client::gui::ui::widgets::{button, heading, row, text};
 use sandpolis_instance::network::stream::StreamMessage;
 use sandpolis_instance::{InstanceId, InstanceType, LayerName};
 use std::collections::{HashMap, HashSet};
 use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver, channel};
 
-use crate::screenshot::{DesktopScreenshotRequest, DesktopScreenshotRequester, DesktopScreenshotResult};
+use crate::screenshot::{
+    DesktopScreenshotRequest, DesktopScreenshotRequester, DesktopScreenshotResult,
+};
 use crate::session::{
     DesktopFrame, DesktopStreamColorMode, DesktopStreamCompressionMode, DesktopStreamEvent,
     DesktopStreamInputEvent, DesktopStreamPointerButton, DesktopStreamRequest,
@@ -149,7 +152,7 @@ impl NodePanel for DesktopPanel {
 
                     // Screenshots are a one-shot agent responder; a probe has no
                     // equivalent, so the button only exists for agents.
-                    if let (Some(instance), None) = (target.instance, target.sub) {
+                    if let (Some(instance), None) = (target.instance(), target.sub) {
                         controls.spawn(button(theme, "Screenshot")).observe(
                             move |_: On<Activate>,
                                   mut streams: ResMut<DesktopStreams>,
@@ -284,7 +287,7 @@ fn describe_target(target: PanelTarget) -> String {
     if let Some(device) = probe_device(target) {
         return format!("{} — {}", device.display_name(), device.device.ip);
     }
-    let Some(instance) = target.instance else {
+    let Some(instance) = target.instance() else {
         return "Not an instance".into();
     };
     match sandpolis_client::gui::queries::query_instance_metadata(instance) {
@@ -384,7 +387,7 @@ fn open_stream(target: PanelTarget, outbound_rx: Receiver<DesktopStreamRequest>)
 
     // A sub-node that isn't a VNC probe borrows its gateway's instance id, so
     // falling through to the agent path would capture the wrong host's screen.
-    let instance = match (target.instance, target.sub) {
+    let instance = match (target.instance(), target.sub) {
         (Some(instance), None) => instance,
         _ => return StreamStart::Unsupported,
     };

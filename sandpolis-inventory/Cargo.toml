@@ -30,7 +30,7 @@ sandpolis-client = { path = "../sandpolis-client", version = "0.0.1", optional =
 
 # GUI dependencies
 bevy = { workspace = true, optional = true }
-include_dir = { workspace = true, optional = true }
+gesso = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3.27.0"
@@ -60,7 +60,7 @@ server = [
 ]
 client = [
   "dep:bevy",
-  "dep:include_dir",
+  "dep:gesso",
   "dep:sandpolis-client",
   "sandpolis-client/client",
 ]

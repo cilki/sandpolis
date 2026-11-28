@@ -12,20 +12,21 @@
 //! latter from the client, and the two are the same data anyway.
 //!
 //! Drawing is immediate-mode via gizmos, matching
-//! `sandpolis_client::gui::edges::render_edges`. The generic `Edge` component is
+//! `gesso::link::render_links`. The generic `Edge` component is
 //! deliberately not reused: it is keyed by `InstanceId` at both ends and feeds
 //! the generic spring layout, so a probe→gateway edge would collapse into a
 //! zero-length self-edge.
 
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
-use sandpolis_client::gui::drag::{cursor_world_position, is_visible};
+use gesso::drag::{cursor_world_position, is_visible};
+use gesso::node::WorldView;
+use gesso::ui::gating::UiPointerState;
+use gesso::ui::theme::{Role, Theme};
+use gesso::ui::tooltip::WorldTooltip;
 use sandpolis_client::gui::input::CurrentLayer;
-use sandpolis_client::gui::node::{NodeEntity, WorldView};
+use sandpolis_client::gui::node::NodeEntity;
 use sandpolis_client::gui::ui::layer::LayerRegistry;
-use sandpolis_client::gui::ui::gating::UiPointerState;
-use sandpolis_client::gui::ui::theme::{Role, Theme};
-use sandpolis_client::gui::ui::tooltip::WorldTooltip;
 use sandpolis_instance::InstanceId;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};

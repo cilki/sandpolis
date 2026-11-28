@@ -22,6 +22,7 @@ clap = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 zstd = { workspace = true, optional = true }
 bevy = { workspace = true, optional = true }
+gesso = { workspace = true, optional = true }
 slint = { version = "1.18", optional = true, default-features = false, features = [
   "std",
   "compat-1-2",
@@ -58,6 +59,7 @@ client = [
   "dep:sandpolis-inventory",
   "sandpolis-inventory/client",
   "dep:bevy",
+  "dep:gesso",
   "dep:clap",
   "dep:serde_json",
   "dep:tokio",

@@ -10,12 +10,13 @@
 //! The layer's toolbar exposes a "View database" action that opens the generic
 //! database browser (see [`crate::gui::database_browser`]).
 
+use crate::gui::node_panel::PanelTargetExt;
 use crate::gui::queries;
-use crate::gui::ui::bind::bind_text;
-use crate::gui::ui::node_panel::{NodePanel, PanelCtx};
-use crate::gui::ui::theme::Role;
-use crate::gui::ui::widgets::{heading, text};
 use bevy::prelude::*;
+use gesso::ui::bind::bind_text;
+use gesso::ui::node_panel::{NodePanel, PanelCtx};
+use gesso::ui::theme::Role;
+use gesso::ui::widgets::{heading, text};
 use sandpolis_instance::network::NetworkManager;
 use sandpolis_instance::{InstanceId, InstanceManager};
 
@@ -30,7 +31,7 @@ pub struct InstancePanel {
 
 impl NodePanel for InstancePanel {
     fn build_summary(&self, ctx: &mut PanelCtx) {
-        let Some(instance) = ctx.target.instance else {
+        let Some(instance) = ctx.target.instance() else {
             return;
         };
         let network = self.network.clone();
@@ -54,7 +55,7 @@ impl NodePanel for InstancePanel {
     }
 
     fn build_detail(&self, ctx: &mut PanelCtx) {
-        let Some(instance) = ctx.target.instance else {
+        let Some(instance) = ctx.target.instance() else {
             return;
         };
         let is_local = instance == self.instance.instance_id;

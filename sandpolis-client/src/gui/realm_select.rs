@@ -9,12 +9,12 @@
 //! and persisted for future starts, and a connection to the server it names is
 //! established — at which point the ordinary login flow takes over.
 
-use crate::gui::ui::panel::modal_scrim;
-use crate::gui::ui::theme::{Role, Theme, ThemedBg, ThemedBorder};
-use crate::gui::ui::widgets::{button, heading, muted, text};
 use bevy::input_focus::InputFocus;
 use bevy::prelude::*;
 use bevy_ui_widgets::Activate;
+use gesso::ui::panel::modal_scrim;
+use gesso::ui::theme::{Role, Theme, ThemedBg, ThemedBorder};
+use gesso::ui::widgets::{button, heading, muted, text};
 use sandpolis_instance::realm::RealmCert;
 use sandpolis_instance::realm::config::REALM_CERT_SUFFIX;
 use std::path::{Path, PathBuf};

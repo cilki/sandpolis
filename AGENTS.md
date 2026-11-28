@@ -196,6 +196,31 @@ _world view_. The graph is made of:
 - Terrains
   - A _terrain_ is a grouping of nodes
 
+The world view itself is drawn by the `gesso` crate (a sibling checkout at
+`../gesso`, see its `AGENTS.md`): the camera, node selection and dragging, the
+force layout, links, terrains, the minimap, node effects, the node panel host
+and the `bevy_ui` toolkit (`gesso::ui`) all live there, along with the icons
+generic enough to share (`os/`, `protocol/`, `device/`, `account/`). gesso knows
+nothing about instances or layers. What stays in `sandpolis-client/src/gui` is
+everything that does: layers (the picker, toolbar, indicator and
+`LayerRegistry`), login and realm selection, the node and theme pickers, toasts,
+and the systems that turn the instance database into what gesso draws.
+
+The two meet through components and one resource rather than through hooks:
+
+- An instance node carries both `NodeEntity` (the `InstanceId`) and gesso's
+  `NodeId` (the same id's wire value, via `gui::node::node_id`). gesso keys
+  links, layout and panels on the `NodeId`.
+- `gui::edges::edge` and `gui::activity::activity_line` spawn the Sandpolis half
+  (`Edge`, `Activity`) together with the gesso half (`Link`, `ActivityLine`).
+  Always go through them.
+- Node panel bodies come from the current layer's `NodePanel`, which
+  `gui::node_panel::sync_active_node_panel` mirrors into gesso's
+  `ActiveNodePanel`. A panel reads its instance with
+  `PanelTargetExt::instance()`.
+- Marker components gesso renders (`Offline`, `NeedsCredentials`,
+  `TerrainMember`, `PanelIcon`) are set by whichever subsystem knows.
+
 #### Domains
 
 A _domain_ groups nodes under a shared name, which is drawn as a terrain. The
@@ -456,8 +481,8 @@ cd android && ./gradlew assembleDebug
 
 ## `sandpolis-client`
 
-- Virtualize rows in the shared table widget (`src/gui/ui/table.rs`) so large
-  lists (e.g. installed packages) can use it
+- Virtualize rows in the shared table widget (now `gesso/src/ui/table.rs`) so
+  large lists (e.g. installed packages) can use it
 
 ## `sandpolis` (main crate)
 

@@ -28,6 +28,7 @@ sandpolis-macros = { path = "../sandpolis-macros", version = "0.0.1" }
 
 # GUI dependencies
 bevy = { workspace = true, optional = true }
+gesso = { workspace = true, optional = true }
 bevy_svg = { workspace = true, optional = true, features = ["2d"] }
 bevy_rapier2d = { workspace = true, optional = true }
 sandpolis-client = { path = "../sandpolis-client", version = "0.0.1", optional = true }
@@ -38,6 +39,7 @@ server = ["dep:reqwest", "dep:regex", "dep:url", "sandpolis-instance/server"]
 client = [
   "sandpolis-instance/client",
   "dep:bevy",
+  "dep:gesso",
   "dep:bevy_svg",
   "dep:bevy_rapier2d",
   "dep:serde_cbor",

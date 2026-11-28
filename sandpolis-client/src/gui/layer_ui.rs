@@ -9,15 +9,15 @@
 use crate::gui::input::CurrentLayer;
 use crate::gui::layer_picker::LayerPickerState;
 use crate::gui::layer_toolbar::LayerToolbarRoot;
-use crate::gui::ui::gating::BlocksWorldInput;
-use crate::gui::ui::icon::IconCache;
-use crate::gui::ui::theme::{Role, Theme, button_surface};
-use crate::gui::ui::z;
 use bevy::image::Image;
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::ui::Pressed;
 use bevy_ui_widgets::{Activate, Button};
+use gesso::ui::gating::BlocksWorldInput;
+use gesso::ui::icon::IconCache;
+use gesso::ui::theme::{Role, Theme, button_surface};
+use gesso::ui::z;
 use sandpolis_instance::LayerName;
 
 /// How long the fade-in takes after a layer change, in seconds.

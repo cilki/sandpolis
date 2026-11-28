@@ -36,9 +36,9 @@ vnc = { version = "0.4", optional = true }
 
 # GUI dependencies
 bevy = { workspace = true, optional = true }
+gesso = { workspace = true, optional = true }
 bevy_svg = { workspace = true, optional = true, features = ["2d"] }
 bevy_rapier2d = { workspace = true, optional = true }
-include_dir = { workspace = true, optional = true }
 sandpolis-client = { path = "../sandpolis-client", version = "0.0.1", optional = true }
 
 # Terminal (TUI/CLI) dependencies, excluded on Android
@@ -76,10 +76,10 @@ server = [
 ]
 client = [
   "dep:bevy",
+  "dep:gesso",
   "dep:clap",
   "dep:bevy_svg",
   "dep:bevy_rapier2d",
-  "dep:include_dir",
   "dep:openh264",
   "dep:serde_cbor",
   "dep:serde_json",

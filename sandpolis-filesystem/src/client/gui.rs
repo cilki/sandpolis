@@ -13,16 +13,17 @@
 use crate::session::FsUsage;
 use bevy::ecs::hierarchy::ChildSpawnerCommands;
 use bevy::prelude::*;
-use sandpolis_client::gui::layer_visuals::utilization_tint;
-use sandpolis_client::gui::ui::Activate;
-use sandpolis_client::gui::ui::bind::bind_text;
-use sandpolis_client::gui::ui::gauge::{GaugeValue, bind_gauge, gauge};
-use sandpolis_client::gui::ui::layer::{LayerClientInfo, RegisterLayerClient};
-use sandpolis_client::gui::ui::node_panel::{NodePanel, PanelCtx};
-use sandpolis_client::gui::ui::theme::{Role, Theme};
+use gesso::ui::Activate;
+use gesso::ui::bind::bind_text;
+use gesso::ui::gauge::{GaugeValue, bind_gauge, gauge};
+use gesso::ui::node_panel::{NodePanel, PanelCtx};
+use gesso::ui::theme::{Role, Theme};
 #[cfg(feature = "probe")]
-use sandpolis_client::gui::ui::widgets::muted;
-use sandpolis_client::gui::ui::widgets::{button, heading, row, text};
+use gesso::ui::widgets::muted;
+use gesso::ui::widgets::{button, heading, row, text};
+use sandpolis_client::gui::layer_visuals::utilization_tint;
+use sandpolis_client::gui::node_panel::PanelTargetExt;
+use sandpolis_client::gui::ui::layer::{LayerClientInfo, RegisterLayerClient};
 use sandpolis_instance::{InstanceId, InstanceType, LayerName};
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -278,7 +279,7 @@ impl NodePanel for FilesystemPanel {
             return;
         }
 
-        if let Some(instance) = ctx.target.instance {
+        if let Some(instance) = ctx.target.instance() {
             summary_body(ctx, agent::Agent(instance));
         }
     }
@@ -302,7 +303,7 @@ impl NodePanel for FilesystemPanel {
             return;
         }
 
-        if let Some(instance) = ctx.target.instance {
+        if let Some(instance) = ctx.target.instance() {
             detail_body(ctx, agent::Agent(instance), agent::transfers(instance));
         }
     }

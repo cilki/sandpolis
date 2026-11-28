@@ -1,20 +1,21 @@
 use crate::gui::edges::Edge;
 use crate::gui::input::CurrentLayer;
-use crate::gui::node::NodeEntity;
+use crate::gui::node::node_id;
 use bevy::prelude::*;
+use gesso::activity::ActivityLine;
 use sandpolis_instance::InstanceId;
 
-/// Component for animated activity lines moving along edges
+/// What an activity line stands for: which instances it runs between, and what
+/// kind of activity it shows.
+///
+/// gesso moves the [`ActivityLine`] spawned alongside it, so always spawn one
+/// with [`activity_line`].
 #[derive(Component)]
-pub struct ActivityLine {
+pub struct Activity {
     /// Source instance ID
     pub from: InstanceId,
     /// Destination instance ID
     pub to: InstanceId,
-    /// Progress along the edge (0.0 to 1.0)
-    pub progress: f32,
-    /// Speed of movement (units per second)
-    pub speed: f32,
     /// Activity type identifier (for different colors/sprites)
     pub activity_type: ActivityType,
 }
@@ -54,18 +55,40 @@ impl ActivityType {
     }
 }
 
-/// Bundle for spawning activity line entities
-#[derive(Bundle)]
-pub struct ActivityLineBundle {
-    pub activity_line: ActivityLine,
-    pub sprite: Sprite,
-    pub transform: Transform,
+/// Everything an activity line needs: the [`Activity`] itself, the
+/// [`ActivityLine`] gesso moves from one node to the other at `speed` (the
+/// fraction of the way covered per second), and the sprite it's drawn with.
+pub fn activity_line(
+    from: InstanceId,
+    to: InstanceId,
+    speed: f32,
+    activity_type: ActivityType,
+) -> impl Bundle {
+    (
+        Activity {
+            from,
+            to,
+            activity_type,
+        },
+        ActivityLine {
+            from: node_id(from),
+            to: node_id(to),
+            progress: 0.0,
+            speed,
+        },
+        Sprite {
+            color: activity_type.color(),
+            custom_size: Some(Vec2::splat(activity_type.size())),
+            ..default()
+        },
+        Transform::default(),
+    )
 }
 
 /// Spawn activity lines for active file transfers
 pub fn spawn_transfer_activity_lines(
     mut commands: Commands,
-    existing_activities: Query<&ActivityLine>,
+    existing_activities: Query<&Activity>,
 ) {
     // Query database for active transfers
     let Ok(transfers) = super::queries::query_active_transfers() else {
@@ -85,71 +108,20 @@ pub fn spawn_transfer_activity_lines(
             continue;
         }
 
-        // Spawn new activity line
-        let activity_type = ActivityType::FileTransfer;
-        commands.spawn(ActivityLineBundle {
-            activity_line: ActivityLine {
-                from: transfer.from,
-                to: transfer.to,
-                progress: 0.0,
-                speed: 0.3, // 30% of edge per second
-                activity_type,
-            },
-            sprite: Sprite {
-                color: activity_type.color(),
-                custom_size: Some(Vec2::splat(activity_type.size())),
-                ..default()
-            },
-            transform: Transform::default(),
-        });
-    }
-}
-
-/// Update activity line positions along their edges
-pub fn update_activity_line_positions(
-    mut activity_query: Query<(&ActivityLine, &mut Transform)>,
-    node_query: Query<(&Transform, &NodeEntity), Without<ActivityLine>>,
-    _time: Res<Time>,
-) {
-    // Build map of instance IDs to positions
-    let mut positions = std::collections::HashMap::new();
-    for (transform, node) in node_query.iter() {
-        positions.insert(node.instance_id, transform.translation.truncate());
-    }
-
-    // Update each activity line
-    for (activity, mut transform) in activity_query.iter_mut() {
-        // Get source and destination positions
-        let Some(&from_pos) = positions.get(&activity.from) else {
-            continue;
-        };
-        let Some(&to_pos) = positions.get(&activity.to) else {
-            continue;
-        };
-
-        // Calculate position along the edge based on progress
-        let position = from_pos.lerp(to_pos, activity.progress);
-        transform.translation = position.extend(1.0); // Z=1 to render above edges
-    }
-}
-
-/// Animate activity lines along their paths
-pub fn animate_activity_lines(mut activity_query: Query<&mut ActivityLine>, time: Res<Time>) {
-    for mut activity in activity_query.iter_mut() {
-        // Update progress
-        activity.progress += activity.speed * time.delta_secs();
-
-        // Loop back to start when reaching the end
-        if activity.progress >= 1.0 {
-            activity.progress = 0.0;
-        }
+        // Spawn new activity line: 30% of edge per second
+        commands.spawn(activity_line(
+            transfer.from,
+            transfer.to,
+            0.3,
+            ActivityType::FileTransfer,
+        ));
     }
 }
 
 /// Despawn activity lines for completed transfers
 pub fn despawn_completed_activity_lines(
     mut commands: Commands,
-    activity_query: Query<(Entity, &ActivityLine)>,
+    activity_query: Query<(Entity, &Activity)>,
 ) {
     // Get list of active transfers
     let Ok(active_transfers) = super::queries::query_active_transfers() else {
@@ -178,7 +150,7 @@ pub fn despawn_completed_activity_lines(
 pub fn spawn_network_activity_lines(
     mut commands: Commands,
     edges: Query<&Edge>,
-    existing_activities: Query<&ActivityLine>,
+    existing_activities: Query<&Activity>,
     current_layer: Res<CurrentLayer>,
 ) {
     // Only spawn on Network layer
@@ -199,30 +171,20 @@ pub fn spawn_network_activity_lines(
             continue;
         }
 
-        // Spawn network traffic indicator
-        let activity_type = ActivityType::NetworkTraffic;
-        commands.spawn(ActivityLineBundle {
-            activity_line: ActivityLine {
-                from: edge.from,
-                to: edge.to,
-                progress: 0.0,
-                speed: 0.5, // Faster than file transfers
-                activity_type,
-            },
-            sprite: Sprite {
-                color: activity_type.color(),
-                custom_size: Some(Vec2::splat(activity_type.size())),
-                ..default()
-            },
-            transform: Transform::default(),
-        });
+        // Spawn network traffic indicator, faster than file transfers
+        commands.spawn(activity_line(
+            edge.from,
+            edge.to,
+            0.5,
+            ActivityType::NetworkTraffic,
+        ));
     }
 }
 
 /// Despawn activity lines when switching away from their layer
 pub fn cleanup_layer_activity_lines(
     mut commands: Commands,
-    activity_query: Query<(Entity, &ActivityLine)>,
+    activity_query: Query<(Entity, &Activity)>,
     current_layer: Res<CurrentLayer>,
 ) {
     // Only keep activity lines relevant to current layer. A line belongs to the

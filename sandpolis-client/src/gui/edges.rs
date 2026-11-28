@@ -1,12 +1,15 @@
 use crate::gui::input::CurrentLayer;
-use crate::gui::node::NodeEntity;
+use crate::gui::node::node_id;
 use crate::gui::queries;
 use bevy::prelude::*;
+use gesso::link::Link;
 use sandpolis_instance::InstanceId;
 use sandpolis_instance::LayerName;
-use std::collections::HashMap;
 
 /// Component representing an edge between two nodes
+///
+/// This is the half of an edge that knows about instances and layers. gesso
+/// draws the [`Link`] spawned alongside it, so always spawn one with [`edge`].
 #[derive(Component)]
 pub struct Edge {
     pub from: InstanceId,
@@ -21,44 +24,42 @@ pub struct EdgeLabel {
     pub text: String,
 }
 
-/// Render edges as lines using Bevy's Gizmos
-/// Queries database for edge data based on current layer
-pub fn render_edges(
-    mut gizmos: Gizmos,
-    edge_query: Query<&Edge>,
-    node_query: Query<(&Transform, &NodeEntity)>,
-    current_layer: Res<CurrentLayer>,
-) {
-    // Build position lookup map once per frame - O(N) instead of O(N*M)
-    let node_positions: HashMap<InstanceId, Vec2> = node_query
-        .iter()
-        .map(|(transform, node)| (node.instance_id, transform.translation.truncate()))
-        .collect();
+/// Everything an edge needs: the [`Edge`] itself, the [`Link`] gesso draws, and
+/// a visibility that already matches `current_layer`.
+pub fn edge(
+    from: InstanceId,
+    to: InstanceId,
+    layer: LayerName,
+    current_layer: &LayerName,
+) -> impl Bundle {
+    (
+        Link {
+            from: node_id(from),
+            to: node_id(to),
+            color: edge_color(&layer),
+        },
+        edge_visibility(&layer, current_layer),
+        Edge { from, to, layer },
+    )
+}
 
-    for edge in edge_query.iter() {
-        // Only render edges for the current layer
-        if edge.layer != **current_layer {
-            continue;
-        }
+/// Color based on layer
+fn edge_color(layer: &LayerName) -> Color {
+    match layer.name() {
+        "Network" => Color::srgb(0.3, 0.8, 1.0),    // Cyan
+        "Filesystem" => Color::srgb(0.3, 1.0, 0.3), // Green
+        "Desktop" => Color::srgb(1.0, 0.5, 0.3),    // Orange
+        "Snapshot" => Color::srgb(0.3, 0.9, 0.8),   // Teal
+        _ => Color::srgb(0.6, 0.6, 0.6),            // Gray
+    }
+}
 
-        // O(1) lookup instead of O(N) iteration
-        let Some(&from) = node_positions.get(&edge.from) else {
-            continue;
-        };
-        let Some(&to) = node_positions.get(&edge.to) else {
-            continue;
-        };
-
-        // Color based on layer
-        let color = match edge.layer.name() {
-            "Network" => Color::srgb(0.3, 0.8, 1.0),    // Cyan
-            "Filesystem" => Color::srgb(0.3, 1.0, 0.3), // Green
-            "Desktop" => Color::srgb(1.0, 0.5, 0.3),    // Orange
-            "Snapshot" => Color::srgb(0.3, 0.9, 0.8),   // Teal
-            _ => Color::srgb(0.6, 0.6, 0.6),            // Gray
-        };
-
-        gizmos.line_2d(from, to, color);
+/// Only edges for the current layer are rendered
+fn edge_visibility(layer: &LayerName, current_layer: &LayerName) -> Visibility {
+    if layer == current_layer {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
     }
 }
 
@@ -86,11 +87,12 @@ pub fn update_edges_for_layer(
             // Query network topology from database
             if let Ok(network_edges) = queries::query_network_topology(&network_manager) {
                 for net_edge in network_edges {
-                    commands.spawn(Edge {
-                        from: net_edge.from,
-                        to: net_edge.to,
-                        layer: LayerName::from("Network"),
-                    });
+                    commands.spawn(edge(
+                        net_edge.from,
+                        net_edge.to,
+                        LayerName::from("Network"),
+                        &current_layer,
+                    ));
                 }
             }
         }
@@ -109,15 +111,19 @@ pub fn update_edges_for_layer(
 }
 
 /// System to show/hide edges based on visibility
+///
+/// gesso's link renderer skips hidden links, so this is what keeps an edge off
+/// screen while its layer isn't the current one. It has to run before
+/// `gesso::link::render_links` each frame for a layer change to take effect in
+/// the frame it happens.
 pub fn update_edge_visibility(
     mut edge_query: Query<(&mut Visibility, &Edge)>,
     current_layer: Res<CurrentLayer>,
 ) {
     for (mut visibility, edge) in edge_query.iter_mut() {
-        *visibility = if edge.layer == **current_layer {
-            Visibility::Visible
-        } else {
-            Visibility::Hidden
-        };
+        let wanted = edge_visibility(&edge.layer, &current_layer);
+        if *visibility != wanted {
+            *visibility = wanted;
+        }
     }
 }

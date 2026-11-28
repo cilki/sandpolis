@@ -11,15 +11,15 @@
 //! it returns `false`.
 
 use crate::gui::input::CurrentLayer;
-use crate::gui::ui::Activate;
-use crate::gui::ui::icon::IconCache;
 use crate::gui::ui::layer::{LayerRegistry, ToolbarEnabledFn};
-use crate::gui::ui::theme::Theme;
-use crate::gui::ui::tooltip::Tooltip;
-use crate::gui::ui::widgets::icon_button;
 use bevy::ecs::world::CommandQueue;
 use bevy::image::Image;
 use bevy::prelude::*;
+use gesso::ui::Activate;
+use gesso::ui::icon::IconCache;
+use gesso::ui::theme::Theme;
+use gesso::ui::tooltip::Tooltip;
+use gesso::ui::widgets::icon_button;
 
 /// Icon rasterization size (px) for toolbar buttons.
 const ICON_PX: u32 = 40;

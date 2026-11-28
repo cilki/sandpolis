@@ -4,4 +4,4 @@
 //! bootstrap so the font resolves through bevy's `AssetServer` in a
 //! self-contained release build.
 
-sandpolis_client::embedded_assets!();
+gesso::embedded_assets!();

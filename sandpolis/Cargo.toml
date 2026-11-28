@@ -79,9 +79,7 @@ rpassword = { version = "7", optional = true }
 
 # GUI client exclusive
 bevy = { workspace = true, optional = true }
-bevy_svg = { workspace = true, optional = true, features = ["2d"] }
-bevy_rapier2d = { workspace = true, optional = true }
-bevy_ui_widgets = { workspace = true, optional = true }
+gesso = { workspace = true, optional = true }
 
 # Terminal (TUI/CLI) client deps, excluded on Android
 [target.'cfg(not(target_os = "android"))'.dependencies]
@@ -136,9 +134,7 @@ client = [
   "sandpolis-server/client",
   # GUI (Bevy)
   "dep:bevy",
-  "dep:bevy_svg",
-  "dep:bevy_rapier2d",
-  "dep:bevy_ui_widgets",
+  "dep:gesso",
   # Terminal (TUI/CLI); the deps are no-ops on Android
   "dep:ratatui",
   "dep:ratatui-image",

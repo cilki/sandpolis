@@ -4,4 +4,4 @@
 //! bootstrap so desktop node SVGs resolve through bevy's `AssetServer` in a
 //! self-contained release build.
 
-sandpolis_client::embedded_assets!();
+gesso::embedded_assets!();

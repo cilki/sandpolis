@@ -17,9 +17,6 @@ use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[cfg(feature = "client")]
-pub mod assets;
-
-#[cfg(feature = "client")]
 pub mod gui;
 
 /// Subscribe to live inventory updates for an instance (call when a view opens).

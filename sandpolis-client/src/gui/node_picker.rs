@@ -1,17 +1,17 @@
 //! Node picker: a modal search over instance nodes that recenters the camera on
 //! the chosen node. Native `bevy_ui` (migrated off egui). Opened with the `N` key.
 
-use crate::gui::node::WorldView;
-use crate::gui::ui::gating::UiPointerState;
-use crate::gui::ui::panel::modal_scrim;
-use crate::gui::ui::text_input::text_input;
-use crate::gui::ui::theme::{Role, Theme, ThemedBg, ThemedBorder};
-use crate::gui::ui::widgets::{heading, muted, text};
 use bevy::input_focus::{FocusCause, InputFocus};
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::text::EditableText;
 use bevy_ui_widgets::{Activate, Button};
+use gesso::node::WorldView;
+use gesso::ui::gating::UiPointerState;
+use gesso::ui::panel::modal_scrim;
+use gesso::ui::text_input::text_input;
+use gesso::ui::theme::{Role, Theme, ThemedBg, ThemedBorder};
+use gesso::ui::widgets::{heading, muted, text};
 use sandpolis_instance::InstanceId;
 
 /// Node picker state.

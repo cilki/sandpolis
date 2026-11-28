@@ -5,8 +5,8 @@
 //! collection. The [`LayerRegistry`] resource then drives the node panel host,
 //! the layer picker, the layer toolbar, and per-layer node visibility.
 
-use super::node_panel::NodePanel;
 use bevy::prelude::*;
+use gesso::ui::node_panel::NodePanel;
 use sandpolis_instance::{InstanceId, InstanceType, LayerName};
 use std::sync::Arc;
 
@@ -187,9 +187,9 @@ impl LayerClientInfo {
             label: "Services",
             icon: "toolbar/services.svg",
             on_click: Arc::new(move |commands: &mut Commands| {
-                super::super::services_panel::open(open_layer.clone(), commands)
+                crate::gui::services_panel::open(open_layer.clone(), commands)
             }),
-            enabled: Arc::new(move |_| super::super::services_panel::has_services(&gate_layer)),
+            enabled: Arc::new(move |_| crate::gui::services_panel::has_services(&gate_layer)),
         });
         self
     }

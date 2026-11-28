@@ -10,17 +10,19 @@
 use crate::{TunnelData, TunnelMode};
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
-use sandpolis_client::gui::drag::{cursor_world_position, is_visible};
+use gesso::drag::{cursor_world_position, is_visible};
+use gesso::node::WorldView;
+use gesso::ui::bind::bind_text;
+use gesso::ui::gating::UiPointerState;
+use gesso::ui::node_panel::{NodePanel, PanelCtx};
+use gesso::ui::table::{TableData, TableRow, bind_table, table};
+use gesso::ui::theme::{Role, Theme};
+use gesso::ui::tooltip::WorldTooltip;
+use gesso::ui::widgets::{heading, text};
 use sandpolis_client::gui::input::CurrentLayer;
-use sandpolis_client::gui::node::{NodeEntity, WorldView};
-use sandpolis_client::gui::ui::bind::bind_text;
-use sandpolis_client::gui::ui::gating::UiPointerState;
+use sandpolis_client::gui::node::NodeEntity;
+use sandpolis_client::gui::node_panel::PanelTargetExt;
 use sandpolis_client::gui::ui::layer::{LayerClientInfo, RegisterLayerClient};
-use sandpolis_client::gui::ui::node_panel::{NodePanel, PanelCtx};
-use sandpolis_client::gui::ui::table::{TableData, TableRow, bind_table, table};
-use sandpolis_client::gui::ui::theme::{Role, Theme};
-use sandpolis_client::gui::ui::tooltip::WorldTooltip;
-use sandpolis_client::gui::ui::widgets::{heading, text};
 use sandpolis_instance::{InstanceId, InstanceType, LayerName};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -47,7 +49,7 @@ pub struct TunnelPanel;
 
 impl NodePanel for TunnelPanel {
     fn build_summary(&self, ctx: &mut PanelCtx) {
-        let Some(instance) = ctx.target.instance else {
+        let Some(instance) = ctx.target.instance() else {
             return;
         };
         super::subscribe();
@@ -68,7 +70,7 @@ impl NodePanel for TunnelPanel {
     }
 
     fn build_detail(&self, ctx: &mut PanelCtx) {
-        let Some(instance) = ctx.target.instance else {
+        let Some(instance) = ctx.target.instance() else {
             return;
         };
         super::subscribe();

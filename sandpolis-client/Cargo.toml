@@ -26,14 +26,11 @@ native_model = { workspace = true, optional = true }
 
 # GUI dependencies
 bevy = { workspace = true, optional = true }
+gesso = { workspace = true, optional = true }
 bevy_svg = { workspace = true, optional = true, features = ["2d"] }
-bevy_rapier2d = { workspace = true, optional = true }
 bevy_ui_widgets = { workspace = true, optional = true }
-resvg = { workspace = true, optional = true }
-image = { workspace = true, optional = true }
 include_dir = { workspace = true, optional = true }
 tracing = { workspace = true }
-rand = { workspace = true, optional = true }
 
 # Terminal (TUI/CLI) dependencies, excluded on Android
 [target.'cfg(not(target_os = "android"))'.dependencies]
@@ -52,13 +49,10 @@ ndk-context = { version = "0.1", optional = true }
 client = [
   "dep:passwords",
   "dep:bevy",
+  "dep:gesso",
   "dep:bevy_svg",
-  "dep:bevy_rapier2d",
   "dep:bevy_ui_widgets",
-  "dep:resvg",
-  "dep:image",
   "dep:include_dir",
-  "dep:rand",
   "dep:sandpolis-server",
   "dep:serde_cbor",
   "sandpolis-instance/client",

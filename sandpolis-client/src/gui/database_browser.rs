@@ -7,16 +7,16 @@
 //! the rows' JSON keys). Since `bind_text` closures run every frame, the count
 //! reads sit behind a ~1s cache; the rows table throttles itself.
 
-use crate::gui::ui::Activate;
-use crate::gui::ui::bind::bind_text;
-use crate::gui::ui::panel::{PanelClosed, spawn_floating_panel};
-use crate::gui::ui::table::{TableData, TableRow, bind_table, table};
-use crate::gui::ui::theme::{Role, Theme, ThemedBorder, ThemedButton};
-use crate::gui::ui::widgets::{row, text};
 use bevy::ecs::world::CommandQueue;
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy_ui_widgets::Button;
+use gesso::ui::Activate;
+use gesso::ui::bind::bind_text;
+use gesso::ui::panel::{PanelClosed, spawn_floating_panel};
+use gesso::ui::table::{TableData, TableRow, bind_table, table};
+use gesso::ui::theme::{Role, Theme, ThemedBorder, ThemedButton};
+use gesso::ui::widgets::{row, text};
 use sandpolis_instance::InstanceId;
 use sandpolis_instance::database::RealmDatabase;
 use sandpolis_instance::database::browse::BROWSE;

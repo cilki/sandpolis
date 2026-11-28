@@ -10,17 +10,17 @@
 //! control stream to whichever instance hosts the service. Since `bind_text`
 //! closures run every frame, all database reads sit behind ~1s caches.
 
-use crate::gui::ui::Activate;
-use crate::gui::ui::bind::bind_text;
-use crate::gui::ui::panel::{PanelClosed, spawn_floating_panel};
-use crate::gui::ui::theme::{Role, Theme, ThemedBorder, ThemedButton};
-use crate::gui::ui::widgets::{row, text};
 use crate::service;
 use bevy::ecs::world::CommandQueue;
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy_ui_widgets::Button;
 use chrono::Utc;
+use gesso::ui::Activate;
+use gesso::ui::bind::bind_text;
+use gesso::ui::panel::{PanelClosed, spawn_floating_panel};
+use gesso::ui::theme::{Role, Theme, ThemedBorder, ThemedButton};
+use gesso::ui::widgets::{row, text};
 use sandpolis_instance::LayerName;
 use sandpolis_instance::service::ServiceData;
 use std::sync::{Arc, Mutex};
@@ -243,7 +243,7 @@ fn build_body(commands: &mut Commands, body: Entity, theme: &Theme, layer: Layer
 
                         let run_state = state.clone();
                         let run_layer = layer.clone();
-                        r.spawn(crate::gui::ui::widgets::button(theme, "Run now"))
+                        r.spawn(gesso::ui::widgets::button(theme, "Run now"))
                             .observe(move |_: On<Activate>| run_selected(&run_state, &run_layer.0));
                     });
 

@@ -18,11 +18,12 @@ use alacritty_terminal::vte::ansi::Processor;
 use bevy::input_focus::tab_navigation::TabIndex;
 use bevy::input_focus::{FocusCause, InputFocus};
 use bevy::prelude::*;
-use sandpolis_client::gui::ui::gating::WantsKeyboard;
+use gesso::ui::gating::WantsKeyboard;
+use gesso::ui::node_panel::{NodePanel, PanelCtx, PanelTarget};
+use gesso::ui::theme::Role;
+use gesso::ui::widgets::{row, text};
+use sandpolis_client::gui::node_panel::PanelTargetExt;
 use sandpolis_client::gui::ui::layer::{LayerClientInfo, RegisterLayerClient};
-use sandpolis_client::gui::ui::node_panel::{NodePanel, PanelCtx, PanelTarget};
-use sandpolis_client::gui::ui::theme::Role;
-use sandpolis_client::gui::ui::widgets::{row, text};
 use sandpolis_instance::network::stream::StreamMessage;
 use sandpolis_instance::{InstanceType, LayerName};
 use std::collections::HashMap;
@@ -397,7 +398,7 @@ fn open_session_stream(
 
     // A sub-node that isn't an SSH probe borrows its gateway's instance id, so
     // falling through to the agent path would open a shell on the wrong host.
-    let instance = match (target.instance, target.sub) {
+    let instance = match (target.instance(), target.sub) {
         (Some(instance), None) => instance,
         _ => return SessionStart::Unsupported,
     };

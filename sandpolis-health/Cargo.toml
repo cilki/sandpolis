@@ -18,6 +18,7 @@ axum = { workspace = true, optional = true }
 axum-macros = { workspace = true, optional = true }
 zbus = { workspace = true, optional = true }
 bevy = { workspace = true, optional = true }
+gesso = { workspace = true, optional = true }
 sandpolis-instance = { path = "../sandpolis-instance", version = "0.0.1" }
 sandpolis-macros = { path = "../sandpolis-macros", version = "0.0.1" }
 sandpolis-agent = { path = "../sandpolis-agent", version = "0.0.1", optional = true }
@@ -39,6 +40,7 @@ client = [
   "dep:sandpolis-client",
   "sandpolis-client/client",
   "dep:bevy",
+  "dep:gesso",
   "dep:ratatui",
   "sandpolis-probe?/client",
 ]

@@ -17,18 +17,18 @@ use bevy::text::EditableText;
 use bevy_rapier2d::dynamics::{Damping, ExternalForce, RigidBody, Velocity};
 use bevy_rapier2d::geometry::{Collider, Restitution};
 use bevy_svg::prelude::{Origin, Svg2d};
+use gesso::node::{NeedsScaling, NodeHitbox, NodeIdentity, PanelIcon, SubNode};
+use gesso::terrain::TerrainMember;
+use gesso::ui::Activate;
+use gesso::ui::bind::bind_text;
+use gesso::ui::icon::{IconCache, decode_icon_bytes};
+use gesso::ui::node_panel::{NodePanel, PanelCtx};
+use gesso::ui::panel::modal_scrim;
+use gesso::ui::text_input::text_input;
+use gesso::ui::theme::{Role, Theme, ThemedBg, ThemedBorder};
+use gesso::ui::widgets::{button, heading, muted, text};
 use sandpolis_client::gui::input::CurrentLayer;
-use sandpolis_client::gui::node::{NeedsScaling, NodeHitbox, NodeIdentity, PanelIcon, SubNode};
-use sandpolis_client::gui::terrain::TerrainMember;
-use sandpolis_client::gui::ui::Activate;
-use sandpolis_client::gui::ui::bind::bind_text;
-use sandpolis_client::gui::ui::icon::{IconCache, decode_icon_bytes};
 use sandpolis_client::gui::ui::layer::{LayerClientInfo, RegisterLayerClient};
-use sandpolis_client::gui::ui::node_panel::{NodePanel, PanelCtx};
-use sandpolis_client::gui::ui::panel::modal_scrim;
-use sandpolis_client::gui::ui::text_input::text_input;
-use sandpolis_client::gui::ui::theme::{Role, Theme, ThemedBg, ThemedBorder};
-use sandpolis_client::gui::ui::widgets::{button, heading, muted, text};
 use sandpolis_instance::LayerName;
 use std::collections::{HashMap, HashSet};
 use tracing::warn;
@@ -97,7 +97,7 @@ struct AccountNodeBundle {
     account_node: AccountNode,
     terrain_member: TerrainMember,
     /// Carries the account id. An account node has no `NodeEntity` at all, so
-    /// this is the whole of its [`PanelTarget`](sandpolis_client::gui::ui::node_panel::PanelTarget).
+    /// this is the whole of its [`PanelTarget`](gesso::ui::node_panel::PanelTarget).
     sub_node: SubNode,
     /// The username (else email) shown at the top of the node's panel.
     identity: NodeIdentity,
@@ -548,8 +548,8 @@ fn render_account_links(
 
 /// Force-directed layout over account nodes.
 ///
-/// The generic systems in `sandpolis_client::gui::layout` are keyed on
-/// `NodeEntity`, which account nodes don't have, so the same repulsion / spring /
+/// The generic systems in `gesso::layout` are keyed on
+/// `NodeId`, which account nodes don't have, so the same repulsion / spring /
 /// damping model is applied here over `AccountNode` instead.
 fn apply_account_layout(
     links: Query<&AccountLink>,
@@ -945,8 +945,7 @@ impl Plugin for AccountClientPlugin {
                 scale_account_node_svgs,
                 // Ordered so the drag handler gets the last word on a node the
                 // user is holding, instead of the layout's forces.
-                apply_account_layout
-                    .before(sandpolis_client::gui::drag::disable_forces_while_dragging),
+                apply_account_layout.before(gesso::drag::disable_forces_while_dragging),
                 update_account_panel_icons,
                 manage_add_account,
                 focus_add_account_input,
@@ -964,7 +963,7 @@ impl Plugin for AccountClientPlugin {
                 // still have members.
                 update_account_node_visibility
                     .after(sandpolis_client::gui::layer_visuals::update_node_visibility_for_layer)
-                    .before(sandpolis_client::gui::terrain::update_terrain_bounds),
+                    .before(gesso::terrain::update_terrain_bounds),
             ),
         );
         app.register_layer_client(

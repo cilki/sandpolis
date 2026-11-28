@@ -30,6 +30,7 @@ tracing = { workspace = true }
 # GUI dependencies
 alacritty_terminal = { workspace = true, optional = true }
 bevy = { workspace = true, optional = true }
+gesso = { workspace = true, optional = true }
 include_dir = { workspace = true, optional = true }
 
 # Terminal (TUI/CLI) dependencies, excluded on Android
@@ -48,6 +49,7 @@ client = [
   "dep:alacritty_terminal",
   "dep:serde_cbor",
   "dep:bevy",
+  "dep:gesso",
   "dep:include_dir",
   "dep:sandpolis-client",
   "dep:crossterm",

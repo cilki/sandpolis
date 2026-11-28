@@ -5,12 +5,13 @@
 use super::{SystemdUnitInfo, query_systemd_units};
 use crate::systemd::ActiveState;
 use bevy::prelude::*;
-use sandpolis_client::gui::ui::bind::bind_text;
+use gesso::ui::bind::bind_text;
+use gesso::ui::node_panel::{NodePanel, PanelCtx};
+use gesso::ui::table::{TableData, TableRow, bind_table, table};
+use gesso::ui::theme::Role;
+use gesso::ui::widgets::{heading, text};
+use sandpolis_client::gui::node_panel::PanelTargetExt;
 use sandpolis_client::gui::ui::layer::{LayerClientInfo, RegisterLayerClient};
-use sandpolis_client::gui::ui::node_panel::{NodePanel, PanelCtx};
-use sandpolis_client::gui::ui::table::{TableData, TableRow, bind_table, table};
-use sandpolis_client::gui::ui::theme::Role;
-use sandpolis_client::gui::ui::widgets::{heading, text};
 use sandpolis_instance::{InstanceType, LayerName};
 
 /// The health layer's node panel (service status).
@@ -26,7 +27,7 @@ impl NodePanel for HealthPanel {
             return;
         }
 
-        let Some(instance) = ctx.target.instance else {
+        let Some(instance) = ctx.target.instance() else {
             return;
         };
         super::subscribe(instance);
@@ -68,7 +69,7 @@ impl NodePanel for HealthPanel {
             return;
         }
 
-        let Some(instance) = ctx.target.instance else {
+        let Some(instance) = ctx.target.instance() else {
             return;
         };
         // Subscribe to live systemd updates for this instance.
@@ -149,9 +150,9 @@ fn count(units: &[SystemdUnitInfo], state: ActiveState) -> usize {
 #[cfg(feature = "probe")]
 mod probe {
     use super::*;
-    use sandpolis_client::gui::ui::Activate;
-    use sandpolis_client::gui::ui::theme::Theme;
-    use sandpolis_client::gui::ui::widgets::{button, muted, row};
+    use gesso::ui::Activate;
+    use gesso::ui::theme::Theme;
+    use gesso::ui::widgets::{button, muted, row};
     use sandpolis_probe::ProbeType;
     use sandpolis_probe::service::{ServiceState, client as probe_service};
     use std::hash::{DefaultHasher, Hash, Hasher};

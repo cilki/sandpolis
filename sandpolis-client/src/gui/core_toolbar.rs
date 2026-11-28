@@ -12,12 +12,13 @@
 //! way around.
 
 use crate::gui::input::LoginDialogState;
-use crate::gui::ui::bind::bind_text;
+use crate::gui::node_panel::PanelTargetExt;
 use crate::gui::ui::layer::{LayerClientInfo, RegisterLayerClient};
-use crate::gui::ui::node_panel::{NodePanel, PanelCtx};
-use crate::gui::ui::theme::Role;
-use crate::gui::ui::widgets::{heading, text};
 use bevy::prelude::*;
+use gesso::ui::bind::bind_text;
+use gesso::ui::node_panel::{NodePanel, PanelCtx};
+use gesso::ui::theme::Role;
+use gesso::ui::widgets::{heading, text};
 use sandpolis_instance::network::NetworkManager;
 use sandpolis_instance::{InstanceId, InstanceType};
 
@@ -28,7 +29,7 @@ pub struct NetworkPanel {
 
 impl NodePanel for NetworkPanel {
     fn build_summary(&self, ctx: &mut PanelCtx) {
-        let Some(instance) = ctx.target.instance else {
+        let Some(instance) = ctx.target.instance() else {
             return;
         };
         // A probe borrows its gateway server's id, so the link described here is
@@ -46,7 +47,7 @@ impl NodePanel for NetworkPanel {
     }
 
     fn build_detail(&self, ctx: &mut PanelCtx) {
-        let Some(instance) = ctx.target.instance else {
+        let Some(instance) = ctx.target.instance() else {
             return;
         };
         let via_gateway = ctx.target.sub.is_some();

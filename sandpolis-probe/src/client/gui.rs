@@ -8,17 +8,17 @@ use bevy::text::EditableText;
 use bevy_rapier2d::dynamics::{Damping, ExternalForce, RigidBody, Velocity};
 use bevy_rapier2d::geometry::{Collider, Restitution};
 use bevy_svg::prelude::{Origin, Svg2d};
-use sandpolis_client::gui::node::{
-    NeedsCredentials, NeedsScaling, NodeEntity, NodeHitbox, NodeIdentity, SubNode,
-};
-use sandpolis_client::gui::ui::Activate;
-use sandpolis_client::gui::ui::bind::bind_text;
+use gesso::node::{NeedsCredentials, NeedsScaling, NodeHitbox, NodeId, NodeIdentity, SubNode};
+use gesso::ui::Activate;
+use gesso::ui::bind::bind_text;
+use gesso::ui::node_panel::{NodePanel, PanelCtx, PanelTarget};
+use gesso::ui::panel::modal_scrim;
+use gesso::ui::text_input::text_input;
+use gesso::ui::theme::{Role, Theme, ThemedBg, ThemedBorder, ThemedText};
+use gesso::ui::widgets::{button, heading, muted, row, text};
+use sandpolis_client::gui::node::{NodeEntity, node_id};
+use sandpolis_client::gui::node_panel::PanelTargetExt;
 use sandpolis_client::gui::ui::layer::{LayerClientInfo, LayerRegistry, RegisterLayerClient};
-use sandpolis_client::gui::ui::node_panel::{NodePanel, PanelCtx, PanelTarget};
-use sandpolis_client::gui::ui::panel::modal_scrim;
-use sandpolis_client::gui::ui::text_input::text_input;
-use sandpolis_client::gui::ui::theme::{Role, Theme, ThemedBg, ThemedBorder, ThemedText};
-use sandpolis_client::gui::ui::widgets::{button, heading, muted, row, text};
 use sandpolis_instance::network::InstanceConnection;
 use sandpolis_instance::network::stream::{StreamId, StreamMessage};
 use sandpolis_instance::{InstanceId, LayerName};
@@ -54,6 +54,8 @@ pub const PROBE_NODE_VISUAL_DIAMETER: f32 = 50.0;
 pub struct ProbeNodeBundle {
     pub probe_node: ProbeNode,
     pub node_entity: NodeEntity,
+    /// The gateway's id as gesso knows it, alongside `node_entity`.
+    pub node_id: NodeId,
     /// Carries the device id, which is what lets the panel host tell a probe
     /// apart from the gateway server whose `InstanceId` it borrows.
     pub sub_node: SubNode,
@@ -107,6 +109,7 @@ pub fn spawn_probe_node(
                 gateway,
             },
             node_entity: NodeEntity { instance_id },
+            node_id: node_id(instance_id),
             sub_node: SubNode(device.id.body()),
             identity: NodeIdentity(device.display_name()),
             hitbox: NodeHitbox { radius: 25.0 },
@@ -382,20 +385,20 @@ fn send_wake(wol: &WolProbeConfig, server: Option<&ServerUrl>) {
 /// Get the SVG asset path for a probe type.
 pub fn get_probe_svg(probe_type: ProbeType) -> &'static str {
     match probe_type {
-        ProbeType::Rdp => "probe/rdp.svg",
-        ProbeType::Ssh => "probe/ssh.svg",
-        ProbeType::Ups => "probe/ups.svg",
-        ProbeType::Vnc => "probe/vnc.svg",
-        ProbeType::Wol => "probe/wol.svg",
-        ProbeType::Http => "probe/http.svg",
-        ProbeType::Ipmi => "probe/ipmi.svg",
-        ProbeType::Rtsp => "probe/rtsp.svg",
-        ProbeType::Snmp => "probe/snmp.svg",
-        ProbeType::Onvif => "probe/onvif.svg",
-        ProbeType::Docker => "probe/docker.svg",
-        ProbeType::Libvirt => "probe/libvirt.svg",
-        ProbeType::Nfs => "probe/nfs.svg",
-        ProbeType::Smb => "probe/smb.svg",
+        ProbeType::Rdp => "protocol/rdp.svg",
+        ProbeType::Ssh => "protocol/ssh.svg",
+        ProbeType::Ups => "protocol/ups.svg",
+        ProbeType::Vnc => "protocol/vnc.svg",
+        ProbeType::Wol => "protocol/wol.svg",
+        ProbeType::Http => "protocol/http.svg",
+        ProbeType::Ipmi => "protocol/ipmi.svg",
+        ProbeType::Rtsp => "protocol/rtsp.svg",
+        ProbeType::Snmp => "protocol/snmp.svg",
+        ProbeType::Onvif => "protocol/onvif.svg",
+        ProbeType::Docker => "protocol/docker.svg",
+        ProbeType::Libvirt => "protocol/libvirt.svg",
+        ProbeType::Nfs => "protocol/nfs.svg",
+        ProbeType::Smb => "protocol/smb.svg",
     }
 }
 
@@ -542,7 +545,7 @@ fn start_pending_share_queries(
 
 /// The set of currently selected device nodes (by id).
 ///
-/// Derived from the generic [`SelectionSet`](sandpolis_client::gui::drag::SelectionSet)
+/// Derived from the generic [`SelectionSet`](gesso::drag::SelectionSet)
 /// by [`sync_device_selection`] rather than maintained by its own click handler —
 /// device nodes select like any other node.
 #[derive(Resource, Default)]
@@ -594,7 +597,7 @@ impl NodePanel for ProbePanel {
             return;
         }
 
-        let Some(instance) = target.instance else {
+        let Some(instance) = target.instance() else {
             return;
         };
         ctx.children(|p| {
@@ -623,7 +626,7 @@ impl NodePanel for ProbePanel {
             return;
         }
 
-        let Some(instance) = target.instance else {
+        let Some(instance) = target.instance() else {
             return;
         };
         let devices = query_devices(instance);
@@ -675,7 +678,7 @@ impl NodePanel for ProbePanel {
 /// Mirror the generic node selection into [`DeviceSelectionSet`], which the
 /// layer's "Delete probe" action is gated on.
 fn sync_device_selection(
-    selection: Res<sandpolis_client::gui::drag::SelectionSet>,
+    selection: Res<gesso::drag::SelectionSet>,
     probes: Query<&ProbeNode>,
     mut devices: ResMut<DeviceSelectionSet>,
 ) {

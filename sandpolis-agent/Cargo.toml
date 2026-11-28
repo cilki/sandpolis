@@ -21,6 +21,7 @@ serde_cbor = { workspace = true, optional = true }
 tracing = { workspace = true }
 dirs = { version = "7", optional = true }
 bevy = { workspace = true, optional = true }
+gesso = { workspace = true, optional = true }
 sandpolis-client = { path = "../sandpolis-client", version = "0.0.1", optional = true }
 sandpolis-instance = { path = "../sandpolis-instance", version = "0.0.1" }
 sandpolis-macros = { path = "../sandpolis-macros", version = "0.0.1" }
@@ -37,6 +38,7 @@ agent = ["sandpolis-instance/agent"]
 client = [
   "sandpolis-instance/client",
   "dep:bevy",
+  "dep:gesso",
   "dep:dirs",
   "dep:ratatui",
   "dep:sandpolis-client",

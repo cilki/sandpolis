@@ -12,16 +12,17 @@ use super::{
 };
 use crate::cve::CveSeverity;
 use bevy::prelude::*;
+use gesso::ui::bind::bind_text;
+use gesso::ui::chart::{ChartSeries, bind_chart, chart};
+use gesso::ui::gauge::{GaugeValue, bind_gauge, gauge};
+use gesso::ui::node_panel::{NodePanel, PanelCtx};
+use gesso::ui::table::{TableData, TableRow, bind_table, table};
+use gesso::ui::theme::Role;
+use gesso::ui::widgets::{heading, text};
 use sandpolis_client::gui::layer_visuals::utilization_tint;
+use sandpolis_client::gui::node_panel::PanelTargetExt;
 use sandpolis_client::gui::queries::query_instance_metadata;
-use sandpolis_client::gui::ui::bind::bind_text;
-use sandpolis_client::gui::ui::chart::{ChartSeries, bind_chart, chart};
-use sandpolis_client::gui::ui::gauge::{GaugeValue, bind_gauge, gauge};
 use sandpolis_client::gui::ui::layer::{LayerClientInfo, RegisterLayerClient};
-use sandpolis_client::gui::ui::node_panel::{NodePanel, PanelCtx};
-use sandpolis_client::gui::ui::table::{TableData, TableRow, bind_table, table};
-use sandpolis_client::gui::ui::theme::Role;
-use sandpolis_client::gui::ui::widgets::{heading, text};
 use sandpolis_instance::{InstanceId, InstanceType, LayerName};
 
 /// Width a gauge is given inside a collapsed panel, whose own width is only
@@ -47,7 +48,7 @@ pub struct InventoryPanel;
 
 impl NodePanel for InventoryPanel {
     fn build_summary(&self, ctx: &mut PanelCtx) {
-        let Some(instance) = ctx.target.instance else {
+        let Some(instance) = ctx.target.instance() else {
             return;
         };
         super::subscribe(instance);
@@ -84,7 +85,7 @@ impl NodePanel for InventoryPanel {
     }
 
     fn build_detail(&self, ctx: &mut PanelCtx) {
-        let Some(instance) = ctx.target.instance else {
+        let Some(instance) = ctx.target.instance() else {
             return;
         };
         // Subscribe to live inventory updates for this instance.
@@ -408,9 +409,9 @@ fn format_bytes(bytes: u64) -> String {
 /// directly.
 fn node_icon(id: InstanceId) -> &'static str {
     match query_instance_metadata(id).map(|metadata| metadata.os_type) {
-        Ok(os_info::Type::Android) => "inventory/mobile.svg",
-        Ok(os_info::Type::Windows | os_info::Type::Macos) => "inventory/desktop.svg",
-        _ => "inventory/server.svg",
+        Ok(os_info::Type::Android) => "device/mobile.svg",
+        Ok(os_info::Type::Windows | os_info::Type::Macos) => "device/desktop.svg",
+        _ => "device/server.svg",
     }
 }
 

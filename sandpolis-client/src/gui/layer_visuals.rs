@@ -1,11 +1,12 @@
 use crate::gui::input::CurrentLayer;
-use crate::gui::node::{NeedsScaling, NodeEntity, NodeSvg};
+use crate::gui::node::NodeEntity;
 use crate::gui::queries;
 #[allow(unused_imports)] // referenced from doc links below
 use crate::gui::ui::layer::LayerClientInfo;
 use crate::gui::ui::layer::LayerRegistry;
 use bevy::prelude::*;
 use bevy_svg::prelude::{Origin, Svg2d};
+use gesso::node::{NeedsScaling, NodeSvg};
 use sandpolis_instance::{InstanceType, LayerName};
 
 /// Update node SVG images when layer changes or for newly spawned nodes

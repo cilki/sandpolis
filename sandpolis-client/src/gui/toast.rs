@@ -7,14 +7,14 @@
 //! notification to the operating system instead.
 //!
 //! Toasts never take input. They are `Pickable::IGNORE` and carry neither
-//! [`BlocksWorldInput`](crate::gui::ui::gating::BlocksWorldInput) nor
-//! [`ModalRoot`](crate::gui::ui::gating::ModalRoot), so panning and selecting in
+//! [`BlocksWorldInput`](gesso::ui::gating::BlocksWorldInput) nor
+//! [`ModalRoot`](gesso::ui::gating::ModalRoot), so panning and selecting in
 //! the world view keep working underneath one.
 
-use crate::gui::ui::theme::{Role, Theme, ThemedBg, ThemedBorder};
-use crate::gui::ui::widgets::{column, text};
-use crate::gui::ui::z;
 use bevy::prelude::*;
+use gesso::ui::theme::{Role, Theme, ThemedBg, ThemedBorder};
+use gesso::ui::widgets::{column, text};
+use gesso::ui::z;
 use sandpolis_instance::notification::{NotificationData, Severity};
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 

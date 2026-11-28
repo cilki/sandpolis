@@ -3,17 +3,17 @@
 //! indicator or the `L` key.
 
 use crate::gui::input::CurrentLayer;
-use crate::gui::ui::gating::UiPointerState;
 use crate::gui::ui::layer::LayerRegistry;
-use crate::gui::ui::panel::modal_scrim;
-use crate::gui::ui::text_input::text_input;
-use crate::gui::ui::theme::{Role, Theme, ThemedBg, ThemedBorder};
-use crate::gui::ui::widgets::{heading, muted, text};
 use bevy::input_focus::{FocusCause, InputFocus};
 use bevy::picking::hover::Hovered;
 use bevy::prelude::*;
 use bevy::text::EditableText;
 use bevy_ui_widgets::{Activate, Button};
+use gesso::ui::gating::UiPointerState;
+use gesso::ui::panel::modal_scrim;
+use gesso::ui::text_input::text_input;
+use gesso::ui::theme::{Role, Theme, ThemedBg, ThemedBorder};
+use gesso::ui::widgets::{heading, muted, text};
 use sandpolis_instance::LayerName;
 
 /// Layer picker state.

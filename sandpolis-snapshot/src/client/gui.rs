@@ -9,16 +9,17 @@ use crate::client::{self, query_operations, query_snapshots};
 use crate::streams::SnapshotMgmtRequest;
 use crate::{SnapshotData, SnapshotDirection, SnapshotOperationData};
 use bevy::prelude::*;
-use sandpolis_client::gui::activity::{ActivityLine, ActivityLineBundle, ActivityType};
-use sandpolis_client::gui::edges::Edge;
+use gesso::ui::Activate;
+use gesso::ui::bind::bind_text;
+use gesso::ui::gauge::{GaugeValue, bind_gauge, gauge};
+use gesso::ui::node_panel::{NodePanel, PanelCtx};
+use gesso::ui::theme::{Role, Theme};
+use gesso::ui::widgets::{button, column, heading, muted, row, text};
+use sandpolis_client::gui::activity::{Activity, ActivityType, activity_line};
+use sandpolis_client::gui::edges::{Edge, edge};
 use sandpolis_client::gui::input::CurrentLayer;
-use sandpolis_client::gui::ui::Activate;
-use sandpolis_client::gui::ui::bind::bind_text;
-use sandpolis_client::gui::ui::gauge::{GaugeValue, bind_gauge, gauge};
+use sandpolis_client::gui::node_panel::PanelTargetExt;
 use sandpolis_client::gui::ui::layer::{LayerClientInfo, RegisterLayerClient};
-use sandpolis_client::gui::ui::node_panel::{NodePanel, PanelCtx};
-use sandpolis_client::gui::ui::theme::{Role, Theme};
-use sandpolis_client::gui::ui::widgets::{button, column, heading, muted, row, text};
 use sandpolis_instance::network::NetworkManager;
 use sandpolis_instance::{InstanceId, InstanceType, LayerName};
 use sandpolis_inventory::hardware::disk::partition::PartitionData;
@@ -29,7 +30,7 @@ pub struct SnapshotPanel;
 
 impl NodePanel for SnapshotPanel {
     fn build_summary(&self, ctx: &mut PanelCtx) {
-        let Some(instance) = ctx.target.instance else {
+        let Some(instance) = ctx.target.instance() else {
             return;
         };
         subscribe_panel(instance);
@@ -54,7 +55,7 @@ impl NodePanel for SnapshotPanel {
     }
 
     fn build_detail(&self, ctx: &mut PanelCtx) {
-        let Some(instance) = ctx.target.instance else {
+        let Some(instance) = ctx.target.instance() else {
             return;
         };
         subscribe_panel(instance);
@@ -288,7 +289,7 @@ fn update_snapshot_activity(
     current_layer: Res<CurrentLayer>,
     network: Res<NetworkManager>,
     edges: Query<(Entity, &Edge)>,
-    activities: Query<(Entity, &ActivityLine)>,
+    activities: Query<(Entity, &Activity)>,
     mut subscribed: Local<bool>,
 ) {
     // Decorations belong to this layer; the shared cleanup systems cull them
@@ -333,32 +334,13 @@ fn update_snapshot_activity(
             .iter()
             .any(|(_, e)| e.layer.name() == "Snapshot" && e.from == from && e.to == to)
         {
-            commands.spawn(Edge {
-                from,
-                to,
-                layer: LayerName::from("Snapshot"),
-            });
+            commands.spawn(edge(from, to, LayerName::from("Snapshot"), &current_layer));
         }
         if !activities
             .iter()
             .any(|(_, a)| a.activity_type == ActivityType::Snapshot && a.from == from && a.to == to)
         {
-            let activity_type = ActivityType::Snapshot;
-            commands.spawn(ActivityLineBundle {
-                activity_line: ActivityLine {
-                    from,
-                    to,
-                    progress: 0.0,
-                    speed: 0.4,
-                    activity_type,
-                },
-                sprite: Sprite {
-                    color: activity_type.color(),
-                    custom_size: Some(Vec2::splat(activity_type.size())),
-                    ..default()
-                },
-                transform: Transform::default(),
-            });
+            commands.spawn(activity_line(from, to, 0.4, ActivityType::Snapshot));
         }
     }
 

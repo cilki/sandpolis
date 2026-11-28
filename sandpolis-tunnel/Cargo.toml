@@ -16,6 +16,7 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 bevy = { workspace = true, optional = true }
+gesso = { workspace = true, optional = true }
 clap = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 sandpolis-instance = { path = "../sandpolis-instance", version = "0.0.1" }
@@ -39,6 +40,7 @@ client = [
   "dep:sandpolis-client",
   "sandpolis-client/client",
   "dep:bevy",
+  "dep:gesso",
   "dep:clap",
   "dep:serde_json",
   "dep:ratatui",
